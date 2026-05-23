@@ -12,6 +12,7 @@ const STARTING_FEN = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
 const state = {
   fen: STARTING_FEN,
   elo: 1500,
+  style: "balanced",
   orientation: "white",
   lastResult: null,
   busy: false,
@@ -78,7 +79,7 @@ async function analyse() {
     const res = await fetch("/api/analyse", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ fen: state.fen, elo: state.elo }),
+      body: JSON.stringify({ fen: state.fen, elo: state.elo, style: state.style }),
     });
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
@@ -278,6 +279,7 @@ document.getElementById("load-btn").addEventListener("click", () => {
 document.getElementById("analyse-btn").addEventListener("click", async () => {
   state.fen = document.getElementById("fen-input").value.trim() || state.fen;
   state.elo = parseInt(document.getElementById("elo-select").value, 10);
+  state.style = document.getElementById("style-select").value;
   cg.set({ fen: state.fen });
   await analyse();
 });
@@ -289,6 +291,11 @@ document.getElementById("flip-btn").addEventListener("click", () => {
 
 document.getElementById("elo-select").addEventListener("change", (e) => {
   state.elo = parseInt(e.target.value, 10);
+});
+
+document.getElementById("style-select").addEventListener("change", (e) => {
+  state.style = e.target.value;
+  if (state.lastResult) analyse();  // re-rank with the new style
 });
 
 // Auto-analyse on load.

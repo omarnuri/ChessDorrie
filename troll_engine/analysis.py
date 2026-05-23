@@ -46,9 +46,9 @@ class Analyzer:
             elo=elo,
         )
 
-    def analyse(self, fen: str) -> AnalysisResult:
+    def analyse(self, fen: str, style: str = "balanced") -> AnalysisResult:
         board = chess.Board(fen)
-        return self._search.analyse(board)
+        return self._search.analyse(board, style=style)
 
     def close(self) -> None:
         self._human.close()

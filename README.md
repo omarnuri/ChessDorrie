@@ -92,17 +92,50 @@ colab_launcher.ipynb # One-click Colab: clones, installs, launches, tunnels
 setup.sh             # Local install (Stockfish, Lc0, Maia weights)
 ```
 
-## Running locally
+## Running locally (with your own GPU)
+
+Two commands. The first installs everything; the second launches the
+server.
 
 ```bash
-./setup.sh                # Installs Stockfish, downloads Maia weights
-python -m app.server      # http://localhost:8000
+./setup.sh    # installs Stockfish, Lc0 (or hints at the CUDA build),
+              # creates a venv, pip-installs, downloads Maia weights
+./run.sh      # http://localhost:8000
 ```
+
+`setup.sh` is idempotent — re-run any time to pick up new weights or
+fix a partial install.
+
+### GPU acceleration
+
+Stockfish is CPU-only (fine — it's fast). The GPU only matters for
+the **human-move predictor** (Maia, served by Lc0).
+
+| OS | GPU | What to install |
+|----|-----|-----------------|
+| Linux | NVIDIA | Don't use `apt install lc0` (CPU-only). Grab the *linux-cuda* release from <https://github.com/LeelaChessZero/lc0/releases/latest>, extract, and symlink the binary into `/usr/local/bin/lc0`. `setup.sh` detects NVIDIA and prints the exact instructions. |
+| macOS | Apple Silicon | `brew install lc0` — uses the Metal backend automatically. |
+| Linux | no GPU | `apt install lc0` works. Maia inference will be CPU but still usable. |
+| any | no Lc0 at all | The bot falls back to a softmax-Stockfish human-move predictor. The architecture stays correct; you just lose the *pattern* knowledge Maia learned from human games. |
+
+Tune the engine via env vars in `run.sh`:
+
+| Var | Default | What it does |
+|---|---|---|
+| `CD_THREADS` | 8 | Stockfish worker threads |
+| `CD_DEPTH` | 18 | Search depth for candidate generation |
+| `CD_SUB_DEPTH` | 14 | Depth for sub-position eval after a predicted reply |
+| `CD_CANDIDATES` | 10 | How many candidate moves to re-rank |
+| `CD_REPLIES` | 6 | How many opponent replies per candidate to sample |
+
+On a beefy machine bump `CD_DEPTH` to 22 and `CD_CANDIDATES` to 14 — the
+extra width finds deeper traps that shallow search misses.
 
 ## Running in Colab
 
-Open `colab_launcher.ipynb` — it installs everything, downloads weights,
-launches the server, and exposes a public URL via Cloudflare tunnel.
+Open `colab_launcher.ipynb` — it installs everything, downloads
+weights, launches the server, and exposes a public URL via Cloudflare
+tunnel.
 
 ## Next steps (the real fun)
 

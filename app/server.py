@@ -82,6 +82,7 @@ app.add_middleware(
 class AnalyseRequest(BaseModel):
     fen: str
     elo: int = Field(default=1500, ge=1000, le=2500)
+    style: str = Field(default="balanced", pattern="^(greedy|balanced|cautious)$")
 
 
 class MoveRequest(BaseModel):
@@ -108,7 +109,7 @@ def analyse(req: AnalyseRequest):
     # so serialise.
     analyzer = get_analyzer(req.elo)
     with _analyzer_lock:
-        result = analyzer.analyse(req.fen)
+        result = analyzer.analyse(req.fen, style=req.style)
     return result.to_dict()
 
 

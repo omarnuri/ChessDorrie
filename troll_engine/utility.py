@@ -50,6 +50,14 @@ class TrollFeatures:
     mate_in: int | None
 
 
+# Opponent-style profiles. Used to bias the utility weights.
+#   "greedy"   — grabs every pawn, follows tactics greedily. Vulnerable to bait.
+#   "balanced" — average human, no strong bias.
+#   "cautious" — defensive, refuses speculative captures. Vulnerable to slow
+#                squeezes where every move is subtly bad.
+OPPONENT_STYLES = ("greedy", "balanced", "cautious")
+
+
 @dataclass
 class UtilityOutput:
     troll_score: float
@@ -75,15 +83,28 @@ def shannon_entropy(probs: list[float]) -> float:
     return h
 
 
-def troll_utility(f: TrollFeatures, *, elo: int = 1500) -> UtilityOutput:
+def troll_utility(
+    f: TrollFeatures, *, elo: int = 1500, style: str = "balanced"
+) -> UtilityOutput:
     """The composite scoring function.
 
     Weights are tuned for "Tal-style menace" — large bonuses for
     successful sacrifices, mild bonuses for human-factor exploitation,
-    big penalties for unsafe play, mild penalty for quick clean mates
-    that skip the material humiliation.
+    big penalties for unsafe play.
+
+    `style` biases the weights based on perceived opponent psychology:
+
+    * **greedy** — boost the sacrifice and human-factor terms; greedy
+      opponents grab every offered piece and walk into prepared mates.
+    * **balanced** — neutral.
+    * **cautious** — diminish the sacrifice bonus (they won't take
+      the bait) and instead reward positions where ALL of the
+      opponent's plausible replies are subtly bad: cautious players
+      prefer "safe-looking" moves and will obligingly walk into a
+      slow squeeze.
     """
     notes: list[str] = []
+    style = style if style in OPPONENT_STYLES else "balanced"
 
     # --- 1. Safety floor ------------------------------------------------
     # Reject moves that lose badly against any plausible reply (unless
@@ -121,6 +142,11 @@ def troll_utility(f: TrollFeatures, *, elo: int = 1500) -> UtilityOutput:
         elif f.expected_eval > 0:
             sacrifice_bonus = 0.3 * sac_cp
             notes.append("Sac with marginal compensation")
+        # Style modulation
+        if style == "greedy":
+            sacrifice_bonus *= 1.6   # they'll take the bait
+        elif style == "cautious":
+            sacrifice_bonus *= 0.5   # they probably won't take
     score += sacrifice_bonus
 
     # --- 4. Human-factor amplification ---------------------------------
@@ -141,13 +167,23 @@ def troll_utility(f: TrollFeatures, *, elo: int = 1500) -> UtilityOutput:
         score -= 0.8 * drop
         notes.append(f"⚠ engine disapproves (−{drop:.0f}cp) and the trap isn't strong")
 
-    # --- 6. Anti-efficient-mate -----------------------------------------
-    # We're in this for the humiliation. A clean mate-in-3 with no
-    # material gain is boring next to "win their queen, then mate in 12".
-    if f.is_mate_for_us and f.mate_in is not None and 1 <= f.mate_in <= 3:
-        if f.expected_material_cp < 300:
-            score -= 250
-            notes.append("Short mate — prefer to win material first if possible")
+    # --- 6. Mate-with-style --------------------------------------------
+    # A quick mate AFTER a sacrifice is the Tal apex. A clean tactical
+    # mate without sacrificial spice is fine but less iconic.
+    if f.is_mate_for_us and f.mate_in is not None:
+        if f.is_sacrifice:
+            # Sacrifice → mate: jackpot. Bonus inversely proportional to mate length.
+            bonus = 1200.0 / max(1, f.mate_in)
+            score += bonus
+            notes.append(f"🔥 Mate-in-{f.mate_in} after a sacrifice — Tal-class brilliancy")
+        elif f.mate_in <= 2:
+            # Mate-in-1 or mate-in-2 with no sacrifice — still good, mild boost
+            score += 200
+            notes.append(f"Forced mate in {f.mate_in}")
+        elif 3 <= f.mate_in <= 5 and f.expected_material_cp < 200:
+            # Quick clean mate, no material extracted — tiny penalty
+            score -= 40
+            notes.append("Quick clean mate — could be flashier")
 
     # --- 7. Forcing-reply bonus ----------------------------------------
     # If the reply distribution is peaked on one move (low entropy), and
@@ -156,6 +192,26 @@ def troll_utility(f: TrollFeatures, *, elo: int = 1500) -> UtilityOutput:
     if f.reply_entropy < 0.6 and f.expected_eval_loss_to_opponent > 100:
         score += 80
         notes.append("Single-reply trap — opponent must find THE move")
+
+    # --- 7b. Slow-squeeze bonus (cautious opponents) -------------------
+    # When the opponent has many similar-looking replies that are ALL
+    # subtly bad, a cautious player walks into one without complaint.
+    # Reward positions where (a) reply entropy is high, (b) every reply
+    # loses some material in expectation. This is the "no safe square"
+    # trap that grinds tinfoil-hat defenders into dust.
+    if style == "cautious":
+        if f.reply_entropy > 1.0 and f.expected_eval_loss_to_opponent > 40:
+            score += 120
+            notes.append("🕸 Slow squeeze — every retreat is subtly bad")
+        # Cautious players over-defend, so positional pressure on objective
+        # eval translates better than tactical sharpness.
+        score += max(0, f.expected_eval - 100) * 0.2
+
+    # Style modulation on human-factor exploitation.
+    if style == "greedy":
+        # Greedy players also miss in non-sacrificial positions —
+        # double-count the human-factor bonus a bit.
+        score += max(0, human_factor) * 0.4
 
     # --- 8. Boring-move dampener ---------------------------------------
     # If a move is just SF's best with no sacrificial spice and no human

@@ -109,7 +109,7 @@ class TrollSearch:
         self._elo = elo
         self._trap_db = trap_db if trap_db is not None else default_db()
 
-    def analyse(self, board: chess.Board) -> AnalysisResult:
+    def analyse(self, board: chess.Board, style: str = "balanced") -> AnalysisResult:
         t0 = time.monotonic()
         bot_pov = board.turn
 
@@ -136,7 +136,8 @@ class TrollSearch:
         candidates: list[Candidate] = []
         for rank, var in enumerate(variations, start=1):
             cand = self._evaluate_candidate(
-                board, var, rank, objective_best_eval, material_before, bot_pov
+                board, var, rank, objective_best_eval, material_before, bot_pov,
+                style=style,
             )
             # Trap DB bonus — small, additive, only fires on known patterns.
             bonus = trap_score_for_move(board.fen(), cand.move_uci, self._trap_db)
@@ -168,6 +169,8 @@ class TrollSearch:
         objective_best_eval: float,
         material_before: int,
         bot_pov: chess.Color,
+        *,
+        style: str = "balanced",
     ) -> Candidate:
         move = var.move
         san = root.san(move)
@@ -277,7 +280,7 @@ class TrollSearch:
             is_mate_for_us=is_mate_for_us,
             mate_in=mate_in,
         )
-        util = troll_utility(features, elo=self._elo)
+        util = troll_utility(features, elo=self._elo, style=style)
 
         return Candidate(
             move_uci=move.uci(),
