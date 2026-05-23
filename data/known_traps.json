@@ -1,0 +1,72 @@
+[
+  {
+    "fen_key": "rnbqkbnr/ppp1pppp/8/3p4/8/8/PPPPPPPP/RNBQKBNR w KQkq",
+    "move_uci": "b1c3",
+    "move_san": "Nc3",
+    "name": "Blackmar-Diemer Gambit setup",
+    "win_rate": 0.55,
+    "sample_size": 200,
+    "source": "curated",
+    "follow_up": ["e2e4 (gambit pawn)"]
+  },
+  {
+    "fen_key": "rnbqkbnr/pppp1ppp/8/4p3/8/8/PPPPPPPP/RNBQKBNR w KQkq",
+    "move_uci": "d2d4",
+    "move_san": "d4",
+    "name": "Englund Gambit declined territory",
+    "win_rate": 0.51,
+    "sample_size": 500,
+    "source": "curated",
+    "follow_up": []
+  },
+  {
+    "fen_key": "rnbqkbnr/pp1ppppp/8/2p5/4P3/8/PPPP1PPP/RNBQKBNR w KQkq",
+    "move_uci": "g1f3",
+    "move_san": "Nf3",
+    "name": "Smith-Morra Gambit territory",
+    "win_rate": 0.52,
+    "sample_size": 800,
+    "source": "curated"
+  },
+  {
+    "fen_key": "rnbqkb1r/pppp1ppp/5n2/4p3/2B1P3/8/PPPP1PPP/RNBQK1NR w KQkq",
+    "move_uci": "g1f3",
+    "move_san": "Nf3",
+    "name": "Italian / Fried Liver entry",
+    "win_rate": 0.58,
+    "sample_size": 1500,
+    "source": "curated",
+    "follow_up": ["after ...Nc6 Ng5! threatens Nxf7"]
+  },
+  {
+    "fen_key": "rn1qkbnr/ppp2p1p/3p2p1/4p3/2B1P1b1/2N2N2/PPPP1PPP/R1BQK2R w KQkq",
+    "move_uci": "f3e5",
+    "move_san": "Nxe5",
+    "name": "Legal's Mate (Légal's pseudo-sacrifice)",
+    "win_rate": 0.72,
+    "sample_size": 350,
+    "source": "curated",
+    "follow_up": [
+      "If Bxd1?? then Bxf7+ Ke7 Nd5#",
+      "If dxe5 then Qxg4 winning a piece"
+    ]
+  },
+  {
+    "fen_key": "r1bqkb1r/pppp1Qpp/2n2n2/4p3/2B1P3/8/PPPP1PPP/RNB1K1NR b KQkq",
+    "move_uci": "",
+    "move_san": "",
+    "name": "Scholar's Mate threat (Bxf7# next)",
+    "win_rate": 0.45,
+    "sample_size": 100,
+    "source": "curated"
+  },
+  {
+    "fen_key": "rnbqkb1r/pppp1ppp/7n/4P3/8/8/PPPP1PPP/RNBQKBNR w KQkq",
+    "move_uci": "d1g4",
+    "move_san": "Qg4",
+    "name": "Halloween Gambit Nxe5 follow-up territory",
+    "win_rate": 0.55,
+    "sample_size": 150,
+    "source": "curated"
+  }
+]

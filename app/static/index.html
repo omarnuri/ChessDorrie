@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>ChessDorrie — Tal Troll Analyzer</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <!-- chessground (vendored) -->
+  <link rel="stylesheet" href="/static/vendor/chessground.base.css" />
+  <link rel="stylesheet" href="/static/vendor/chessground.brown.css" />
+  <link rel="stylesheet" href="/static/vendor/chessground.cburnett.css" />
+
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <header>
+    <div class="title">
+      <span class="logo">♛</span>
+      <h1>ChessDorrie</h1>
+      <span class="subtitle">— the Tal Troll Analyzer —</span>
+    </div>
+    <div class="controls">
+      <label>FEN
+        <input type="text" id="fen-input"
+               value="rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
+               size="64" />
+      </label>
+      <label>Elo
+        <select id="elo-select">
+          <option value="1100">1100 (casual)</option>
+          <option value="1500" selected>1500 (club)</option>
+          <option value="1900">1900 (expert)</option>
+        </select>
+      </label>
+      <button id="load-btn">Load</button>
+      <button id="analyse-btn" class="primary">Analyse</button>
+      <button id="flip-btn" title="Flip board">↻</button>
+    </div>
+  </header>
+
+  <main>
+    <section class="board-panel">
+      <div id="board" class="cg-wrap"></div>
+      <div class="board-status" id="status">Idle.</div>
+      <div class="legend">
+        <span class="key obj">▮</span> objective best
+        <span class="key troll">▮</span> troll best
+        <span class="key alt">▮</span> alt candidates
+      </div>
+    </section>
+
+    <section class="info-panel">
+      <h2>Position metrics</h2>
+      <div class="meters">
+        <div class="meter">
+          <div class="meter-label">Objective eval <span id="m-obj-val">—</span></div>
+          <div class="meter-bar"><div id="m-obj" class="meter-fill obj"></div></div>
+        </div>
+        <div class="meter">
+          <div class="meter-label">Troll eval (vs human) <span id="m-troll-val">—</span></div>
+          <div class="meter-bar"><div id="m-troll" class="meter-fill troll"></div></div>
+        </div>
+        <div class="meter">
+          <div class="meter-label">Anger probability <span id="m-anger-val">—</span></div>
+          <div class="meter-bar"><div id="m-anger" class="meter-fill anger"></div></div>
+        </div>
+        <div class="meter">
+          <div class="meter-label">Human factor <span id="m-human-val">—</span></div>
+          <div class="meter-bar"><div id="m-human" class="meter-fill human"></div></div>
+        </div>
+      </div>
+
+      <h2>Candidates <span class="hint">(ranked by troll score — click to play)</span></h2>
+      <table class="candidates" id="candidates">
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>Move</th>
+            <th title="Stockfish ranking">SF</th>
+            <th title="Stockfish eval (centipawns, side to move)">Obj</th>
+            <th title="Expected eval after a human reply">Troll</th>
+            <th title="Material change in pawns">Mat</th>
+            <th title="Probability opp plays a materially-losing move">Anger</th>
+            <th title="Sacrifice marker">Sac</th>
+            <th>Notes</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+
+      <div class="reply-panel" id="reply-panel" style="display:none">
+        <h3>Predicted replies <span class="hint" id="reply-move-name"></span></h3>
+        <ul id="reply-list"></ul>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <span id="elapsed">—</span>
+    &nbsp;·&nbsp;
+    <span id="elo-info">—</span>
+    &nbsp;·&nbsp;
+    <span class="muted">Stockfish 16 + Maia (or softmax fallback)</span>
+  </footer>
+
+  <script type="module" src="/static/app.js"></script>
+</body>
+</html>
