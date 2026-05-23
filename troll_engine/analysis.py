@@ -12,6 +12,7 @@ import chess
 
 from .engine import Engine
 from .human_model import HumanModel, get_human_model
+from .lichess_explorer import LichessExplorer
 from .search import TrollSearch
 from .types import AnalysisResult
 
@@ -32,10 +33,22 @@ class Analyzer:
         reply_count: int = 5,
         subposition_depth: int = 12,
         engine_threads: int = 2,
+        use_explorer: bool = True,
     ) -> None:
         self.elo = elo
         self._engine = Engine(threads=engine_threads)
-        self._human = get_human_model(elo, self._engine, weights_dir=weights_dir)
+        # One Explorer shared between the human model and the search so
+        # both code paths benefit from the cache.
+        self._explorer: LichessExplorer | None = None
+        if use_explorer:
+            self._explorer = LichessExplorer(
+                ratings=(max(1000, elo - 200), elo, min(2500, elo + 200)),
+                speeds=("blitz", "rapid"),
+            )
+        self._human = get_human_model(
+            elo, self._engine, weights_dir=weights_dir,
+            use_explorer=use_explorer, explorer=self._explorer,
+        )
         self._search = TrollSearch(
             self._engine,
             self._human,
@@ -44,6 +57,7 @@ class Analyzer:
             reply_count=reply_count,
             subposition_depth=subposition_depth,
             elo=elo,
+            explorer=self._explorer,
         )
 
     def analyse(self, fen: str, style: str = "balanced") -> AnalysisResult:

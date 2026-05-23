@@ -26,6 +26,7 @@ import chess
 
 from .engine import Engine, material_balance, _pov_score_to_cp, MATE_SCORE, PIECE_CP
 from .human_model import HumanModel, PredictedMove
+from .lichess_explorer import LichessExplorer
 from .trap_db import TrapDB, default_db, trap_score_for_move
 from .types import AnalysisResult, Candidate, Reply
 from .utility import TrollFeatures, troll_utility, shannon_entropy
@@ -99,6 +100,7 @@ class TrollSearch:
         subposition_depth: int = 12,
         elo: int = 1500,
         trap_db: TrapDB | None = None,
+        explorer: LichessExplorer | None = None,
     ) -> None:
         self._engine = engine
         self._human = human_model
@@ -108,6 +110,7 @@ class TrollSearch:
         self._subposition_depth = subposition_depth
         self._elo = elo
         self._trap_db = trap_db if trap_db is not None else default_db()
+        self._explorer = explorer
 
     def analyse(self, board: chess.Board, style: str = "balanced") -> AnalysisResult:
         t0 = time.monotonic()
@@ -133,6 +136,17 @@ class TrollSearch:
 
         material_before = material_balance(board, bot_pov)
 
+        # Pull empirical stats from Lichess for the root, if enabled.
+        explorer_moves: dict[str, "object"] = {}
+        explorer_total = 0
+        if self._explorer is not None:
+            try:
+                resp = self._explorer.lookup(board.fen())
+                explorer_total = resp.total
+                explorer_moves = {m.move_uci: m for m in resp.moves}
+            except Exception:
+                pass
+
         candidates: list[Candidate] = []
         for rank, var in enumerate(variations, start=1):
             cand = self._evaluate_candidate(
@@ -144,6 +158,23 @@ class TrollSearch:
             if bonus > 0:
                 cand.troll_score += bonus
                 cand.notes.append(f"📚 known trap (+{bonus:.0f}cp prior)")
+
+            # Lichess-empirical bonus: if the side-to-move wins >> 50% of
+            # historical games at this rating after playing this move, bump.
+            exm = explorer_moves.get(cand.move_uci)
+            if exm is not None and exm.total >= 30:
+                wr = exm.win_rate_for(bot_pov)
+                if wr > 0.52:
+                    # Scale by sqrt(n) so a 200-game result beats a 30-game one.
+                    bonus = 600 * (wr - 0.5) * math.sqrt(min(exm.total, 1000) / 100)
+                    cand.troll_score += bonus
+                    cand.notes.append(
+                        f"📊 wins {wr*100:.0f}% in {exm.total} Lichess games at this rating (+{bonus:.0f}cp)"
+                    )
+                # Also expose raw sample size in the candidate's notes so
+                # the UI can show it.
+                cand.empirical_total = exm.total
+                cand.empirical_win_rate = wr
             candidates.append(cand)
 
         # Rank by troll score (descending).

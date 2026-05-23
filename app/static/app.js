@@ -158,6 +158,11 @@ function renderCandidates(cands, objBest, trollBest) {
     const tr = document.createElement("tr");
     if (c.move_uci === trollBest) tr.classList.add("top-troll");
     tr.dataset.uci = c.move_uci;
+    const empN = c.empirical_total || 0;
+    const empWR = c.empirical_win_rate || 0;
+    const empCell = empN >= 30
+      ? `<span class="${empWR > 0.5 ? 'good' : (empWR < 0.5 ? 'bad' : '')}">${(empWR*100).toFixed(0)}% <span class="hint">(${empN})</span></span>`
+      : (empN > 0 ? `<span class="hint">${empN}</span>` : '—');
     tr.innerHTML = `
       <td>${i + 1}</td>
       <td class="move">${c.move_san}</td>
@@ -167,6 +172,7 @@ function renderCandidates(cands, objBest, trollBest) {
       <td class="${c.expected_material >= 0 ? 'good' : 'bad'}">${(c.expected_material / 100).toFixed(2)}</td>
       <td>${fmtPct(c.anger_probability)}</td>
       <td class="sac ${c.is_sacrifice ? 'yes' : ''}">${c.is_sacrifice ? '⚡' + (c.sacrifice_value/100).toFixed(1) : ''}</td>
+      <td>${empCell}</td>
       <td class="notes">${(c.notes || []).join('; ')}</td>
     `;
     tr.addEventListener("click", () => {

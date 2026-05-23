@@ -45,27 +45,52 @@ move.
 ## Architecture
 
 ```
-                  ┌────────────────────────────┐
-                  │       FastAPI server       │
-                  │   (app/server.py)          │
-                  └────────────┬───────────────┘
-                               │
-        ┌──────────────────────┼──────────────────────┐
-        │                      │                      │
-┌───────▼──────┐    ┌──────────▼──────────┐  ┌────────▼────────┐
-│  Stockfish   │    │   Maia (human       │  │   Trap DB       │
-│  (objective) │    │   move predictor)   │  │ (known patterns)│
-└──────────────┘    └─────────────────────┘  └─────────────────┘
-       ▲                       ▲                      ▲
-       └───────────────────────┼──────────────────────┘
-                               │
-                  ┌────────────▼───────────────┐
-                  │   troll_engine.search      │
-                  │   • multipv candidates     │
-                  │   • re-rank by utility     │
-                  │   • merge trap-db priors   │
-                  └────────────────────────────┘
+                       ┌────────────────────────────┐
+                       │       FastAPI server       │
+                       │   (app/server.py)          │
+                       └────────────┬───────────────┘
+                                    │
+        ┌──────────────┬────────────┼────────────┬──────────────┐
+        │              │            │            │              │
+┌───────▼──────┐ ┌─────▼──────┐ ┌───▼──────────┐ ┌───▼──────┐
+│  Stockfish   │ │   Maia     │ │   Lichess    │ │ Trap DB  │
+│  (objective) │ │ (neural    │ │   Explorer   │ │ (known   │
+│              │ │  human)    │ │ (empirical:  │ │ patterns)│
+│              │ │            │ │ billions of  │ │          │
+│              │ │            │ │ human games) │ │          │
+└──────────────┘ └────────────┘ └──────────────┘ └──────────┘
+       ▲              ▲ (fallback)     ▲                ▲
+       └──────────────┼────────────────┼────────────────┘
+                      │                │
+                ┌─────▼────────────────▼──────────┐
+                │   troll_engine.search           │
+                │   • multipv candidates          │
+                │   • re-rank by troll utility    │
+                │   • + trap-db & empirical bonus │
+                └─────────────────────────────────┘
 ```
+
+### Three sources of human knowledge
+
+The human-move predictor is layered, with cheap-and-empirical first:
+
+1. **Lichess Opening Explorer** (`troll_engine/lichess_explorer.py`) —
+   the free public API that aggregates every game on Lichess into a
+   per-position move table. For in-book positions with ≥ 30 historical
+   games at the target rating, we use the **empirical** move
+   distribution directly — that's literally what humans of that
+   strength played from this position. We also pull *outcome
+   statistics* (win rate by side) and bonus the search when a move
+   has a disproportionately good record at the target rating.
+
+2. **Maia** (neural human-move model, `MaiaLc0Model`) — for positions
+   the Explorer doesn't have. Maia's policy-only net predicts the move
+   a human at rating R will play with ~50% top-1 accuracy. Requires
+   Lc0 + Maia weights.
+
+3. **Softmax-Stockfish** (`SoftmaxStockfishModel`) — final fallback if
+   neither of the above is available. Captures "humans usually pick
+   from Stockfish's top few" but misses pattern knowledge.
 
 ## Project layout
 
@@ -142,10 +167,13 @@ tunnel.
 - **Trap mining pipeline** — Lichess publishes ~100GB/month of games. We
   stream the PGN, find positions where a higher-rated player lost material
   in ≤6 plies after a sacrifice from a lower-rated player. Those are the
-  *real* traps people fall for.
+  *real* traps people fall for. The Opening Explorer is great for
+  on-demand queries; offline mining lets us pre-compute the most-trap-y
+  positions globally and ship them in the trap DB.
 - **Personalized Maia** — fine-tune a Maia head on the specific opponent's
   Lichess/Chess.com history. The bot learns *your* opponent.
 - **Time-trouble awareness** — humans crack faster in time pressure. Scale
   the troll bonus by remaining clock.
-- **Opening-book traps** — book moves are pre-computed. We don't need to
-  search — just play the line.
+- **Masters DB**: the Explorer also has a separate `masters` database
+  of OTB games. Useful as a sanity check — "what do GMs do here?" —
+  but obviously a worse human-trap model than the rated-pool data.

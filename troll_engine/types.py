@@ -51,6 +51,10 @@ class Candidate:
     trap_depth: int = 0               # plies of refutation depth, if known
     notes: list[str] = field(default_factory=list)  # human-readable annotations
 
+    # Empirical Lichess stats (from the Opening Explorer, if available)
+    empirical_total: int = 0          # # of Lichess games from this position
+    empirical_win_rate: float = 0.0   # side-to-move's score: (W + 0.5D)/N
+
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
         return d

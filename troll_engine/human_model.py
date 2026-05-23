@@ -29,6 +29,7 @@ from dataclasses import dataclass
 import chess
 
 from .engine import Engine, _pov_score_to_cp
+from .lichess_explorer import LichessExplorer
 
 
 @dataclass
@@ -174,6 +175,74 @@ class MaiaLc0Model(HumanModel):
 
 
 # --------------------------------------------------------------------- #
+# Empirical: Lichess Opening Explorer.                                  #
+# --------------------------------------------------------------------- #
+
+class LichessExplorerModel(HumanModel):
+    """Uses the Lichess Opening Explorer's *empirical* move frequencies
+    as the move-probability distribution.
+
+    For positions with very few historical games we return an empty
+    list and let the caller fall back to a different model.
+    """
+
+    def __init__(
+        self,
+        explorer: LichessExplorer,
+        *,
+        min_samples: int = 30,
+    ) -> None:
+        self._explorer = explorer
+        self._min_samples = min_samples
+
+    def predict(self, board: chess.Board, top_k: int = 5) -> list[PredictedMove]:
+        if board.is_game_over():
+            return []
+        resp = self._explorer.lookup(board.fen())
+        if resp.total < self._min_samples or not resp.moves:
+            return []
+        # The Explorer already ranks moves by frequency; we normalize
+        # the top-k counts to a probability distribution.
+        top = resp.moves[:top_k]
+        denom = sum(m.total for m in top) or 1
+        out: list[PredictedMove] = []
+        for m in top:
+            try:
+                mv = chess.Move.from_uci(m.move_uci)
+            except Exception:
+                continue
+            if mv not in board.legal_moves:
+                continue
+            out.append(PredictedMove(move=mv, probability=m.total / denom))
+        return out
+
+
+class HybridHumanModel(HumanModel):
+    """Explorer first; falls back to a secondary model for novel positions.
+
+    The classic case is opening / early middlegame, where the Explorer
+    has thousands of games and gives us the true empirical
+    distribution. Once the game leaves book the Explorer dries up and
+    Maia (or softmax-Stockfish) takes over — that's exactly the regime
+    where pattern-matching neural nets shine.
+    """
+
+    def __init__(self, primary: LichessExplorerModel, fallback: HumanModel) -> None:
+        self._primary = primary
+        self._fallback = fallback
+
+    def predict(self, board: chess.Board, top_k: int = 5) -> list[PredictedMove]:
+        preds = self._primary.predict(board, top_k=top_k)
+        if preds:
+            return preds
+        return self._fallback.predict(board, top_k=top_k)
+
+    def close(self) -> None:
+        self._primary.close()
+        self._fallback.close()
+
+
+# --------------------------------------------------------------------- #
 # Factory.                                                              #
 # --------------------------------------------------------------------- #
 
@@ -181,21 +250,40 @@ def get_human_model(
     elo: int,
     fallback_engine: Engine,
     weights_dir: str = "weights",
+    *,
+    use_explorer: bool = True,
+    explorer: LichessExplorer | None = None,
 ) -> HumanModel:
     """Return the best human-model implementation available.
 
-    Tries `MaiaLc0Model` first (real Maia); falls back to
-    `SoftmaxStockfishModel`. The choice of weights file matches the
-    nearest available Maia rung (1100, 1500, or 1900).
+    Order of preference, all wrapped behind a hybrid when applicable:
+
+      1. `LichessExplorerModel` for in-book positions (≥ 30 games at
+         the target rating bucket on Lichess).
+      2. `MaiaLc0Model` once we leave book, if lc0 + weights present.
+      3. `SoftmaxStockfishModel` as the final fallback.
+
+    Pass ``use_explorer=False`` to disable the API call (e.g. offline).
     """
     rungs = (1100, 1500, 1900)
     nearest = min(rungs, key=lambda r: abs(r - elo))
     weights = os.path.join(weights_dir, f"maia-{nearest}.pb.gz")
 
+    # Choose the neural / engine fallback first.
+    neural: HumanModel
     if shutil.which("lc0") and os.path.isfile(weights):
         try:
-            return MaiaLc0Model(weights)
+            neural = MaiaLc0Model(weights)
         except Exception:
-            pass
+            neural = SoftmaxStockfishModel(fallback_engine, elo=elo)
+    else:
+        neural = SoftmaxStockfishModel(fallback_engine, elo=elo)
 
-    return SoftmaxStockfishModel(fallback_engine, elo=elo)
+    if not use_explorer:
+        return neural
+
+    exp = explorer or LichessExplorer(
+        ratings=(max(1000, elo - 200), elo, min(2500, elo + 200)),
+        speeds=("blitz", "rapid"),
+    )
+    return HybridHumanModel(LichessExplorerModel(exp), neural)
