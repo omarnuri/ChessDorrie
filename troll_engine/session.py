@@ -93,6 +93,10 @@ class PreparedPosition:
     explorer_total: int
     explorer_by_uci: dict[str, dict]  # uci → {wins, draws, total, win_rate}
     sub_evals: dict[tuple[str, str], float] = field(default_factory=dict)
+    # Setup-mode: per-candidate cp value of the largest sacrifice opportunity
+    # that becomes available 2 plies in the future (after our move + opp's
+    # likely reply).
+    trap_potentials: dict[str, float] = field(default_factory=dict)
 
 
 # Analysis-precision modes.
@@ -121,7 +125,7 @@ _MODE_CONFIGS: dict[str, _ModeConfig] = {
 }
 
 
-CacheKey = tuple[str, str, int, "int | None", str]  # (fen_key, style, elo, bot_side, mode)
+CacheKey = tuple[str, str, int, "int | None", str, str]  # (fen_key, style, elo, bot_side, mode, playstyle)
 
 
 def _fen_key(fen: str) -> str:
@@ -142,6 +146,8 @@ class GameSession:
         style: str = "balanced",
         bot_side: chess.Color | None = None,
         analysis_mode: str = "lite",
+        playstyle: str = "direct",
+        autoplay: bool = False,
         weights_dir: str = "weights",
         explorer: LichessExplorer | None = None,
         trap_db: TrapDB | None = None,
@@ -155,6 +161,8 @@ class GameSession:
         self.style = style
         self.bot_side = bot_side  # None = observer (think for side-to-move)
         self.analysis_mode = analysis_mode if analysis_mode in ANALYSIS_MODES else "lite"
+        self.playstyle = playstyle if playstyle in ("direct", "setup") else "direct"
+        self.autoplay = bool(autoplay)
         self.weights_dir = weights_dir
 
         self._engine = Engine(threads=engine_threads)
@@ -249,6 +257,8 @@ class GameSession:
             "style": self.style,
             "elo": self.elo,
             "analysis_mode": self.analysis_mode,
+            "playstyle": self.playstyle,
+            "autoplay": self.autoplay,
         }
 
     def submit_move(self, uci: str) -> bool:
@@ -305,6 +315,18 @@ class GameSession:
             self.analysis_mode = mode
         self._restart_event.set()
 
+    def set_playstyle(self, playstyle: str) -> None:
+        if playstyle not in ("direct", "setup"):
+            return
+        with self._state_lock:
+            self.playstyle = playstyle
+        self._restart_event.set()
+
+    def set_autoplay(self, on: bool) -> None:
+        with self._state_lock:
+            self.autoplay = bool(on)
+        # No need to invalidate cache — autoplay is purely an output knob.
+
     def close(self) -> None:
         self._stop_event.set()
         self._restart_event.set()
@@ -319,11 +341,12 @@ class GameSession:
 
     # ----- worker thread ----- #
 
-    def _snapshot_state(self) -> tuple[chess.Board, str, int, "int | None", str]:
+    def _snapshot_state(self) -> tuple[chess.Board, str, int, "int | None", str, str]:
         with self._state_lock:
             return (
                 self.board.copy(stack=False),
                 self.style, self.elo, self.bot_side, self.analysis_mode,
+                self.playstyle,
             )
 
     def _board_changed(self, snapshot_fen: str) -> bool:
@@ -353,7 +376,7 @@ class GameSession:
                 time.sleep(0.5)
 
     def _iterate_one_position(self) -> None:
-        board, style, elo, bot_side, analysis_mode = self._snapshot_state()
+        board, style, elo, bot_side, analysis_mode, playstyle = self._snapshot_state()
 
         # If the bot's side is set and it isn't the bot's turn to move,
         # we still analyse — but the search models the "opponent" as the
@@ -363,7 +386,7 @@ class GameSession:
         ck: CacheKey = (
             _fen_key(snapshot_fen), style, elo,
             bot_side if bot_side is None else int(bot_side),
-            analysis_mode,
+            analysis_mode, playstyle,
         )
 
         self._restart_event.clear()
@@ -377,8 +400,9 @@ class GameSession:
                 "cache_hit": True,
             })
 
-        # 2) Prep: predictions + Lichess Explorer + (if non-lite) per-reply sub-evals.
-        prep = self._prepare(board, style, elo, analysis_mode)
+        # 2) Prep: predictions + Lichess Explorer + (if non-lite) per-reply sub-evals
+        #    + (if setup playstyle) 2-ply lookahead for trap-setting potential.
+        prep = self._prepare(board, style, elo, analysis_mode, playstyle)
         if self._restart_event.is_set() or self._stop_event.is_set():
             return
 
@@ -386,6 +410,9 @@ class GameSession:
         self._search_started_at = time.monotonic()
         with self._metrics_lock:
             self._metrics = EngineMetrics()
+        # Track troll_best stability for autoplay
+        last_troll_best: str | None = None
+        stable_count = 0
         try:
             with self._engine.stream_analysis(
                 board, multipv=DEFAULT_MULTIPV, max_depth=DEFAULT_STREAM_MAX_DEPTH
@@ -399,7 +426,7 @@ class GameSession:
                     if now - last_broadcast >= BROADCAST_INTERVAL:
                         result = self._assemble_from_streaming(
                             board, list(analysis.multipv), prep, style, elo, bot_side,
-                            analysis_mode,
+                            analysis_mode, playstyle,
                         )
                         if result is not None:
                             self._cache_put(ck, result)
@@ -409,6 +436,18 @@ class GameSession:
                                 "cache_hit": False,
                             })
                             last_broadcast = now
+                            # Autoplay: if enabled, it's bot's turn, and the
+                            # troll-best has been stable for ≥ 2 ticks AND we've
+                            # searched at least a moderate depth, play it.
+                            current_tb = result.troll_best_uci
+                            if current_tb == last_troll_best:
+                                stable_count += 1
+                            else:
+                                stable_count = 1
+                            last_troll_best = current_tb
+                            if self._should_autoplay(bot_side, board, result, stable_count):
+                                self._auto_apply_move(current_tb)
+                                break
         except chess.engine.EngineTerminatedError:
             log.error("session %s engine terminated", self.session_id)
             return
@@ -430,10 +469,53 @@ class GameSession:
             except Exception:
                 pass
 
+    # ----- autoplay ----- #
+
+    def _should_autoplay(
+        self,
+        bot_side: chess.Color | None,
+        snapshot_board: chess.Board,
+        result: AnalysisResult,
+        stable_count: int,
+    ) -> bool:
+        if not self.autoplay or bot_side is None:
+            return False
+        # Only autoplay when it's the bot's turn
+        if snapshot_board.turn != bot_side:
+            return False
+        # Need enough thinking depth and stable best move
+        meta = result.metrics
+        if meta.depth < 14:
+            return False
+        if stable_count < 2:
+            return False
+        if not result.troll_best_uci:
+            return False
+        return True
+
+    def _auto_apply_move(self, uci: str) -> None:
+        """Push the bot's chosen move and broadcast the new position."""
+        try:
+            mv = chess.Move.from_uci(uci)
+        except ValueError:
+            return
+        with self._state_lock:
+            if mv not in self.board.legal_moves:
+                return
+            self.board.push(mv)
+        log.info("session %s autoplay: %s", self.session_id, uci)
+        # Broadcast new position immediately (worker loop will pick up
+        # the restart on its next iteration via _restart_event).
+        payload = {"type": "position", **self.position_snapshot(),
+                   "autoplayed": uci}
+        self._broadcast_threadsafe(payload)
+        self._restart_event.set()
+
     # ----- prep phase: precompute predictions once per position ----- #
 
     def _prepare(
-        self, board: chess.Board, style: str, elo: int, analysis_mode: str
+        self, board: chess.Board, style: str, elo: int,
+        analysis_mode: str, playstyle: str,
     ) -> PreparedPosition:
         # Predicted replies for top candidates: ask the human model on
         # the position AFTER each plausible candidate move. We don't
@@ -520,12 +602,94 @@ class GameSession:
                 time.monotonic() - prep_start,
             )
 
+        # Setup-mode look-ahead: for the top-K candidates, simulate
+        # opp's TOP-2 likely replies (weighted by Maia probability) and
+        # run shallow multipv on each resulting position. If a
+        # sacrifice with positive eval is available there, that's our
+        # "trap potential" — playing this candidate sets up a future sac.
+        #
+        # We iterate over multiple replies (not just top-1) because the
+        # whole point is that opp picks suboptimal moves: even when
+        # Maia's #1 reply defends perfectly, #2/#3 might walk into the trap.
+        trap_potentials: dict[str, float] = {}
+        if playstyle == "setup":
+            tp_start = time.monotonic()
+            tp_calls = 0
+            for cand_uci in candidate_ucis[:5]:
+                if self._restart_event.is_set() or self._stop_event.is_set():
+                    break
+                sub = sub_boards.get(cand_uci)
+                if sub is None:
+                    continue
+                replies = predicted.get(cand_uci, [])
+                if not replies:
+                    continue
+
+                weighted_quality = 0.0
+                used_prob = 0.0
+                for reply_pred in replies[:2]:  # top-2 most likely replies
+                    if self._restart_event.is_set() or self._stop_event.is_set():
+                        break
+                    sub2 = sub.copy()
+                    try:
+                        sub2.push(reply_pred.move)
+                    except Exception:
+                        continue
+                    if sub2.is_game_over():
+                        continue
+                    try:
+                        future_vars = self._engine.multipv(sub2, k=3, depth=12)
+                    except Exception:
+                        continue
+                    tp_calls += 1
+                    # Best sac we found from this branch.
+                    # Walk each PV: if at any "after our move" position the
+                    # material balance dipped vs the start of the lookahead
+                    # AND the line's overall eval is winning, that's a
+                    # sacrificial setup the engine is willing to play.
+                    material_at_sub2 = material_balance(sub2, sub2.turn)
+                    best_for_branch = 0.0
+                    for fv in future_vars:
+                        if not fv.pv:
+                            continue
+                        if fv.score_cp < 80:  # PV doesn't win enough to justify a sac
+                            continue
+                        test = sub2.copy()
+                        max_drop = 0  # biggest material loss along the PV
+                        for ply, mv in enumerate(fv.pv[:8]):
+                            try:
+                                test.push(mv)
+                            except Exception:
+                                break
+                            # After every full move pair we've made another
+                            # of our own moves; check material then.
+                            if ply % 2 == 1:  # opp just replied → it's our pov + their last move
+                                drop = material_at_sub2 - material_balance(test, sub2.turn)
+                                if drop > max_drop:
+                                    max_drop = drop
+                        if max_drop > 100:
+                            # Quality: how much sac × how confident the engine is
+                            quality = min(max_drop, 800) * (min(fv.score_cp, 1000) / 1000.0)
+                            best_for_branch = max(best_for_branch, quality)
+                    weighted_quality += reply_pred.probability * best_for_branch
+                    used_prob += reply_pred.probability
+
+                if used_prob > 0:
+                    # Normalize and store
+                    trap_potentials[cand_uci] = weighted_quality / used_prob
+            log.debug(
+                "session %s setup lookahead %d cands, %d eval-calls, %.2fs",
+                self.session_id, len(trap_potentials), tp_calls,
+                time.monotonic() - tp_start,
+            )
+
         return PreparedPosition(
             fen=board.fen(),
             predicted_replies=predicted,
             explorer_total=explorer_total,
             explorer_by_uci=explorer_by_uci,
             sub_evals=sub_evals,
+            trap_potentials=trap_potentials,
         )
 
     # ----- streaming assembly: build candidates from current multipv ----- #
@@ -539,6 +703,7 @@ class GameSession:
         elo: int,
         bot_side: chess.Color | None,
         analysis_mode: str,
+        playstyle: str,
     ) -> AnalysisResult | None:
         bot_pov = board.turn
         material_before = material_balance(board, bot_pov)
@@ -563,7 +728,7 @@ class GameSession:
             cand = self._build_candidate(
                 board, pv, score_cp, idx + 1,
                 objective_best_eval, material_before, bot_pov,
-                prep, style, elo, analysis_mode,
+                prep, style, elo, analysis_mode, playstyle,
             )
             if cand is not None:
                 candidates.append(cand)
@@ -603,6 +768,7 @@ class GameSession:
         style: str,
         elo: int,
         analysis_mode: str,
+        playstyle: str,
     ) -> Candidate | None:
         move = pv[0]
         try:
@@ -720,6 +886,8 @@ class GameSession:
         if is_mate_for_us:
             mate_in = max(1, MATE_SCORE - int(score_cp))
 
+        trap_potential_cp = prep.trap_potentials.get(cand_uci, 0.0)
+
         features = TrollFeatures(
             objective_eval=score_cp,
             objective_rank=rank,
@@ -735,8 +903,9 @@ class GameSession:
             prob_opponent_blunders=prob_blunder,
             is_mate_for_us=is_mate_for_us,
             mate_in=mate_in,
+            trap_potential_cp=trap_potential_cp,
         )
-        util = troll_utility(features, elo=elo, style=style)
+        util = troll_utility(features, elo=elo, style=style, playstyle=playstyle)
 
         cand = Candidate(
             move_uci=cand_uci,
@@ -754,6 +923,7 @@ class GameSession:
             human_factor=util.human_factor,
             trap_depth=0,
             notes=util.notes,
+            trap_potential_cp=trap_potential_cp,
         )
 
         # Trap-DB bonus.

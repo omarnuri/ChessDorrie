@@ -46,6 +46,15 @@
           <option value="deep">🔬 deep (~8s prep, max accuracy)</option>
         </select>
       </label>
+      <label>Playstyle
+        <select id="playstyle-select" title="direct = take the sac now · setup = build positions where sacs will be available 2 plies later">
+          <option value="direct" selected>🗡 direct (sac now)</option>
+          <option value="setup">🪤 setup (build to sacs)</option>
+        </select>
+      </label>
+      <label class="autoplay-label" title="When ON, the bot auto-plays its troll-best move when it's your selected side's turn">
+        <input type="checkbox" id="autoplay-toggle" /> Auto-play
+      </label>
       <div class="side-selector" title="Which side you are playing">
         I play:
         <label><input type="radio" name="side" value="" checked /> 👁</label>
@@ -119,6 +128,7 @@
             <th title="Material change in pawns">Mat</th>
             <th title="Probability opp plays a materially-losing move">Anger</th>
             <th title="Sacrifice marker">Sac</th>
+            <th title="Setup mode: best future sacrifice 2 plies ahead">Trap2+</th>
             <th title="Lichess Explorer: win rate (sample size)">Lichess</th>
             <th>Notes</th>
           </tr>

@@ -142,6 +142,17 @@ async def _dispatch(session, ws: WebSocket, msg: dict) -> None:
                 session.set_analysis_mode(mode)
                 await _broadcast_position(session)
 
+        elif t == "playstyle":
+            ps = msg.get("playstyle", "direct")
+            if ps in ("direct", "setup"):
+                session.set_playstyle(ps)
+                await _broadcast_position(session)
+
+        elif t == "autoplay":
+            on = bool(msg.get("on", False))
+            session.set_autoplay(on)
+            await _broadcast_position(session)
+
         elif t == "reset":
             fen = str(msg.get("fen", chess.STARTING_FEN))
             if session.reset_to(fen):

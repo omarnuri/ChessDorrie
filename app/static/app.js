@@ -25,6 +25,8 @@ const state = {
   elo: 1500,
   style: "balanced",
   mode: "lite",            // "lite" | "hybrid" | "deep"
+  playstyle: "direct",     // "direct" | "setup"
+  autoplay: false,
   side: null,              // "white" | "black" | null (observer)
   orientation: "white",
   sessionId: localStorage.getItem("chessdorrie_session") || "new",
@@ -79,6 +81,8 @@ function connect() {
     sendJson({ type: "elo", elo: state.elo });
     sendJson({ type: "side", color: state.side });
     sendJson({ type: "mode", mode: state.mode });
+    sendJson({ type: "playstyle", playstyle: state.playstyle });
+    sendJson({ type: "autoplay", on: state.autoplay });
   };
 
   ws.onmessage = (ev) => {
@@ -306,6 +310,7 @@ function renderCandidates(cands, objBest, trollBest) {
       <td class="${c.expected_material >= 0 ? "good" : "bad"}">${(c.expected_material / 100).toFixed(2)}</td>
       <td>${fmtPct(c.anger_probability)}</td>
       <td class="sac ${c.is_sacrifice ? "yes" : ""}">${c.is_sacrifice ? "⚡" + (c.sacrifice_value / 100).toFixed(1) : ""}</td>
+      <td class="${c.trap_potential_cp > 0 ? 'good' : ''}">${c.trap_potential_cp > 0 ? "🪤" + (c.trap_potential_cp / 100).toFixed(1) : ""}</td>
       <td>${empCell}</td>
       <td class="notes">${(c.notes || []).join("; ")}</td>
     `;
@@ -386,6 +391,17 @@ document.getElementById("mode-select").addEventListener("change", (e) => {
   state.mode = e.target.value;
   setStatus(`Precision: ${state.mode} — re-preparing position…`);
   sendJson({ type: "mode", mode: state.mode });
+});
+
+document.getElementById("playstyle-select").addEventListener("change", (e) => {
+  state.playstyle = e.target.value;
+  setStatus(`Playstyle: ${state.playstyle}`);
+  sendJson({ type: "playstyle", playstyle: state.playstyle });
+});
+
+document.getElementById("autoplay-toggle").addEventListener("change", (e) => {
+  state.autoplay = e.target.checked;
+  sendJson({ type: "autoplay", on: state.autoplay });
 });
 
 // Side selector — radio group; "" means observer.

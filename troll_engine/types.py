@@ -55,6 +55,11 @@ class Candidate:
     empirical_total: int = 0          # # of Lichess games from this position
     empirical_win_rate: float = 0.0   # side-to-move's score: (W + 0.5D)/N
 
+    # Setup-mode signal: highest sacrifice opportunity we found 2 plies
+    # ahead, in cp. 0 = no future sac visible. Drives the "setup play"
+    # bot personality (prefers moves that build to sacrifices).
+    trap_potential_cp: float = 0.0
+
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
         return d

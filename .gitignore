@@ -3,10 +3,11 @@ __pycache__/
 *.egg-info/
 .pytest_cache/
 
-# Large mined corpora and engine weights — keep out of repo
+# Large raw dumps and engine weights — keep out of repo
 data/dumps/
-data/mined_traps.json
 weights/
+# Mined trap files are committed (small, useful seed); add specific
+# patterns here if you produce larger ones you don't want to track.
 
 # Local server logs / scratch
 *.log

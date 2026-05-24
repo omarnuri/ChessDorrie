@@ -49,6 +49,9 @@ class TrollFeatures:
     is_mate_for_us: bool
     mate_in: int | None
 
+    # Setup-mode signal: largest sacrifice opportunity available 2 plies ahead
+    trap_potential_cp: float = 0.0
+
 
 # Opponent-style profiles. Used to bias the utility weights.
 #   "greedy"   — grabs every pawn, follows tactics greedily. Vulnerable to bait.
@@ -56,6 +59,14 @@ class TrollFeatures:
 #   "cautious" — defensive, refuses speculative captures. Vulnerable to slow
 #                squeezes where every move is subtly bad.
 OPPONENT_STYLES = ("greedy", "balanced", "cautious")
+
+# Bot playstyle — orthogonal to opponent style.
+#   "direct" — take the troll-best move now; if a sac is available, play it.
+#   "setup"  — prefer moves that BUILD UP toward sacrifices that become
+#              available 2 plies later. Slightly discounts the immediate-sac
+#              bonus in favour of moves whose top-1 future continuation has
+#              a high-quality sacrificial candidate.
+PLAYSTYLES = ("direct", "setup")
 
 
 @dataclass
@@ -84,7 +95,8 @@ def shannon_entropy(probs: list[float]) -> float:
 
 
 def troll_utility(
-    f: TrollFeatures, *, elo: int = 1500, style: str = "balanced"
+    f: TrollFeatures, *, elo: int = 1500, style: str = "balanced",
+    playstyle: str = "direct",
 ) -> UtilityOutput:
     """The composite scoring function.
 
@@ -105,6 +117,7 @@ def troll_utility(
     """
     notes: list[str] = []
     style = style if style in OPPONENT_STYLES else "balanced"
+    playstyle = playstyle if playstyle in PLAYSTYLES else "direct"
 
     # --- 1. Safety floor ------------------------------------------------
     # Reject moves that lose badly against any plausible reply (unless
@@ -147,7 +160,24 @@ def troll_utility(
             sacrifice_bonus *= 1.6   # they'll take the bait
         elif style == "cautious":
             sacrifice_bonus *= 0.5   # they probably won't take
+        # Playstyle modulation: setup-mode prefers DELAYED sacs over
+        # immediate ones, so discount the current-move sac bonus.
+        if playstyle == "setup":
+            sacrifice_bonus *= 0.7
     score += sacrifice_bonus
+
+    # --- 3b. Setup-mode: trap-potential bonus ---------------------------
+    # Reward moves that lead to positions where a sacrifice becomes
+    # available within 2 plies. Always present as a signal; only
+    # contributes meaningfully in setup playstyle.
+    if f.trap_potential_cp > 0:
+        weight = 0.8 if playstyle == "setup" else 0.15
+        tp_bonus = min(400.0, f.trap_potential_cp * weight)
+        score += tp_bonus
+        if playstyle == "setup" and tp_bonus > 50:
+            notes.append(
+                f"🪤 sets up a sacrifice 2 plies ahead (+{tp_bonus:.0f}cp)"
+            )
 
     # --- 4. Human-factor amplification ---------------------------------
     # If exploiting human-ness gains us material vs. objective best play,
