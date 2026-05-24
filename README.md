@@ -164,16 +164,30 @@ tunnel.
 
 ## Next steps (the real fun)
 
-- **Trap mining pipeline** — Lichess publishes ~100GB/month of games. We
-  stream the PGN, find positions where a higher-rated player lost material
-  in ≤6 plies after a sacrifice from a lower-rated player. Those are the
-  *real* traps people fall for. The Opening Explorer is great for
-  on-demand queries; offline mining lets us pre-compute the most-trap-y
-  positions globally and ship them in the trap DB.
-- **Personalized Maia** — fine-tune a Maia head on the specific opponent's
-  Lichess/Chess.com history. The bot learns *your* opponent.
-- **Time-trouble awareness** — humans crack faster in time pressure. Scale
-  the troll bonus by remaining clock.
+- **Trap mining pipeline** — Lichess publishes ~28GB/month of compressed
+  PGN (~100M games). `data/mine_lichess.py` streams a month, finds
+  positions where lower-rated players won material in ≤6 plies against
+  higher-rated opponents, and writes them to `data/mined_traps.json`.
+  The seed file shipped in the repo has 678 entries from 100k 2014-01
+  games; rerunning on a full recent month yields ~50k-100k unique trap
+  positions. Run in Colab (~30-60 min for download + mine).
+
+- **Fine-tune a trap-policy network** — `scripts/dataset_filter_traps.py`
+  extracts only games decided by sacrifice (~1-3% of input); 
+  `scripts/train_trap_policy.py` defines a Maia-style residual CNN
+  ready to fine-tune on those games. Run on Colab A100 (~6-12 h for
+  3 epochs on 5M positions) or H100 (~2-4 h). The skeleton trains
+  from scratch by default; warm-start from official Maia weights once
+  the protobuf-to-PyTorch converter is wired (see TODO in
+  `train_trap_policy.py`).
+
+- **Personalized Maia** — fine-tune a Maia head on the specific
+  opponent's Lichess/Chess.com history. The bot learns *your*
+  opponent.
+
+- **Time-trouble awareness** — humans crack faster in time pressure.
+  Scale the troll bonus by remaining clock.
+
 - **Masters DB**: the Explorer also has a separate `masters` database
   of OTB games. Useful as a sanity check — "what do GMs do here?" —
   but obviously a worse human-trap model than the rated-pool data.
