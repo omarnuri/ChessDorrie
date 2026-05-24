@@ -173,6 +173,101 @@ main {
   margin-left: 8px;
 }
 
+.side-selector {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--text-dim);
+  padding: 4px 8px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+.side-selector label {
+  cursor: pointer;
+  user-select: none;
+  padding: 0 4px;
+}
+.side-selector input[type=radio] {
+  display: none;
+}
+.side-selector input[type=radio]:checked + * {
+  /* visual indication handled by adjacent emoji */
+}
+.side-selector label:has(input[type=radio]:checked) {
+  background: var(--accent);
+  border-radius: 3px;
+  color: #fff;
+}
+
+.engine-info {
+  margin-bottom: 20px;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.engine-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.engine-row .engine-label {
+  width: 50px;
+}
+.engine-row .engine-value {
+  width: 70px;
+  font-weight: 600;
+  color: var(--text);
+}
+.engine-bar {
+  flex: 1;
+  background: var(--panel-2);
+  height: 8px;
+  border-radius: 2px;
+  overflow: hidden;
+}
+.engine-bar.inline {
+  width: 60px;
+  flex: 0 0 auto;
+  height: 4px;
+  display: inline-block;
+  margin-left: 4px;
+  vertical-align: middle;
+}
+#depth-bar {
+  background: linear-gradient(90deg, var(--obj), var(--accent-2));
+  height: 100%;
+  width: 0%;
+  transition: width 0.5s;
+}
+#gpu-bar {
+  background: var(--good);
+  height: 100%;
+  width: 0%;
+  transition: width 0.5s;
+}
+.engine-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+}
+.engine-stat {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.engine-stat .engine-label {
+  color: var(--text-dim);
+  text-transform: uppercase;
+  font-size: 10px;
+  letter-spacing: 0.5px;
+}
+.engine-stat > span:last-child:not(.engine-label) {
+  color: var(--text);
+  font-weight: 600;
+}
+
 .meters {
   display: grid;
   gap: 10px;

@@ -61,6 +61,20 @@ class Candidate:
 
 
 @dataclass
+class EngineMetrics:
+    """Engine telemetry surfaced to the UI live during a search."""
+    depth: int = 0
+    seldepth: int = 0
+    nodes: int = 0
+    nps: int = 0
+    elapsed_ms: int = 0
+    gpu_util: float | None = None       # 0..100, or None if no GPU monitor
+    vram_mb: float | None = None        # MB used, or None
+    lc0_nps: int | None = None          # if Maia/Lc0 reports its own NPS
+    is_final: bool = False              # True only when search hit max depth or stopped
+
+
+@dataclass
 class AnalysisResult:
     """Top-level result for one analysed position."""
 
@@ -71,6 +85,7 @@ class AnalysisResult:
     troll_best_uci: str             # our re-ranked #1
     elapsed_ms: int                 # how long the analysis took
     elo_assumed: int                # which Maia model was used
+    metrics: EngineMetrics = field(default_factory=EngineMetrics)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -81,4 +96,5 @@ class AnalysisResult:
             "troll_best_uci": self.troll_best_uci,
             "elapsed_ms": self.elapsed_ms,
             "elo_assumed": self.elo_assumed,
+            "metrics": asdict(self.metrics),
         }

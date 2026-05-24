@@ -11,9 +11,11 @@ POV**. Mates are mapped to a large finite value (±MATE_SCORE).
 
 from __future__ import annotations
 
+import contextlib
 import os
 import shutil
 from dataclasses import dataclass
+from typing import Iterator
 
 import chess
 import chess.engine
@@ -138,6 +140,41 @@ class Engine:
         """Like `evaluate`, but in `pov`'s POV (not necessarily side-to-move)."""
         info = self._engine.analyse(board, chess.engine.Limit(depth=depth))
         return _pov_score_to_cp(info["score"], pov)
+
+    # -- streaming ------------------------------------------------------
+    @contextlib.contextmanager
+    def stream_analysis(
+        self,
+        board: chess.Board,
+        multipv: int = 8,
+        max_depth: int = 24,
+        max_nodes: int | None = None,
+    ):
+        """Open a streaming analysis on `board`.
+
+        Yields a `chess.engine.SimpleAnalysisResult`. Iterating it gives
+        an `InfoDict` per UCI info line; the rolling multi-PV state is
+        available as `.multipv` (list of dicts, one per PV slot). The
+        underlying engine keeps running until the limit fires or the
+        context manager exits — exit always calls `.stop()` to drain.
+
+        While this context is active, do NOT call the synchronous
+        `multipv()` / `evaluate()` / `evaluate_for()` methods on the
+        same engine — Stockfish is single-tenant.
+        """
+        limit_kwargs = {"depth": max_depth}
+        if max_nodes is not None:
+            limit_kwargs["nodes"] = max_nodes
+        limit = chess.engine.Limit(**limit_kwargs)
+        result = self._engine.analysis(board, limit, multipv=multipv,
+                                        info=chess.engine.INFO_ALL)
+        try:
+            yield result
+        finally:
+            try:
+                result.stop()
+            except Exception:
+                pass
 
 
 # -- material helpers (used by search.py for sacrifice detection) -----

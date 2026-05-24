@@ -15,6 +15,8 @@ background — the cost of spinning them up is significant.
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -28,6 +30,15 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from troll_engine import Analyzer
+from troll_engine.gpu_monitor import GpuMonitor
+from troll_engine.session_manager import SessionManager
+from app.ws import router as ws_router
+
+
+logging.basicConfig(
+    level=os.environ.get("CD_LOG_LEVEL", "INFO"),
+    format="%(asctime)s %(name)s %(levelname)s %(message)s",
+)
 
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -61,11 +72,30 @@ def get_analyzer(elo: int) -> Analyzer:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    yield
-    with _analyzer_lock:
-        for a in _analyzer.values():
-            a.close()
-        _analyzer.clear()
+    # Start the GPU monitor (singleton — harmless to nudge it).
+    GpuMonitor.instance()
+    # SessionManager owns the live ponder sessions.
+    loop = asyncio.get_running_loop()
+    app.state.session_manager = SessionManager(
+        loop,
+        weights_dir=WEIGHTS_DIR,
+        use_explorer=os.environ.get("CD_USE_EXPLORER", "1") == "1",
+    )
+    try:
+        yield
+    finally:
+        try:
+            app.state.session_manager.shutdown()
+        except Exception:
+            pass
+        with _analyzer_lock:
+            for a in _analyzer.values():
+                a.close()
+            _analyzer.clear()
+        try:
+            GpuMonitor.instance().stop()
+        except Exception:
+            pass
 
 
 app = FastAPI(title="ChessDorrie", lifespan=lifespan)
@@ -75,6 +105,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.include_router(ws_router)
 
 
 # --- request/response models ----------------------------------------- #

@@ -23,7 +23,7 @@
       <label>FEN
         <input type="text" id="fen-input"
                value="rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
-               size="64" />
+               size="60" />
       </label>
       <label>Elo
         <select id="elo-select">
@@ -39,8 +39,13 @@
           <option value="cautious">🪖 cautious (tinfoil hat)</option>
         </select>
       </label>
+      <div class="side-selector" title="Which side you are playing">
+        I play:
+        <label><input type="radio" name="side" value="" checked /> 👁</label>
+        <label><input type="radio" name="side" value="white" /> ⚪</label>
+        <label><input type="radio" name="side" value="black" /> ⚫</label>
+      </div>
       <button id="load-btn">Load</button>
-      <button id="analyse-btn" class="primary">Analyse</button>
       <button id="flip-btn" title="Flip board">↻</button>
     </div>
   </header>
@@ -57,6 +62,24 @@
     </section>
 
     <section class="info-panel">
+      <h2>Engine <span class="hint">live · the bot never stops thinking</span></h2>
+      <div class="engine-info">
+        <div class="engine-row">
+          <span class="engine-label">Depth</span>
+          <span id="engine-depth" class="engine-value">—</span>
+          <div class="engine-bar"><div id="depth-bar"></div></div>
+        </div>
+        <div class="engine-stats">
+          <span class="engine-stat"><span class="engine-label">NPS</span> <span id="engine-nps">—</span></span>
+          <span class="engine-stat"><span class="engine-label">Nodes</span> <span id="engine-nodes">—</span></span>
+          <span class="engine-stat"><span class="engine-label">GPU</span> <span id="engine-gpu">—</span>
+            <div class="engine-bar inline"><div id="gpu-bar"></div></div>
+          </span>
+          <span class="engine-stat"><span class="engine-label">VRAM</span> <span id="engine-vram">—</span></span>
+          <span class="engine-stat"><span class="engine-label">Elapsed</span> <span id="engine-elapsed">—</span></span>
+        </div>
+      </div>
+
       <h2>Position metrics</h2>
       <div class="meters">
         <div class="meter">
