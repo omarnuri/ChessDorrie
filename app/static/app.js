@@ -291,6 +291,15 @@ function fmtPct(p) {
   return (p * 100).toFixed(0) + "%";
 }
 
+function fmtWdl(wdl) {
+  if (!wdl || wdl.length !== 3) return "—";
+  const [w, d, l] = wdl;
+  // Compact "W/D/L" as integer percents, color-coded by sharpness.
+  const sharp = 1 - d;
+  const cls = sharp > 0.6 ? "good" : (d > 0.7 ? "bad" : "");
+  return `<span class="${cls}">${Math.round(w*100)}/${Math.round(d*100)}/${Math.round(l*100)}</span>`;
+}
+
 function fmtNumber(n) {
   if (n === null || n === undefined) return "—";
   if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + "M";
@@ -356,6 +365,7 @@ function renderCandidates(cands, objBest, trollBest) {
       <td>${fmtPct(c.anger_probability)}</td>
       <td class="sac ${c.is_sacrifice ? "yes" : ""}">${c.is_sacrifice ? "⚡" + (c.sacrifice_value / 100).toFixed(1) : ""}</td>
       <td class="${c.trap_potential_cp > 0 ? 'good' : ''}">${c.trap_potential_cp > 0 ? "🪤" + (c.trap_potential_cp / 100).toFixed(1) : ""}</td>
+      <td>${fmtWdl(c.wdl)}</td>
       <td>${empCell}</td>
       <td class="notes">${(c.notes || []).join("; ")}</td>
     `;

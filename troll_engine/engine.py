@@ -53,6 +53,10 @@ class Variation:
     score_cp: float          # centipawns from side-to-move's POV
     pv: list[chess.Move]     # principal variation, including the first move
     depth: int
+    # Win/Draw/Loss probabilities from the side-to-move's POV, summing
+    # to ~1.0. Available on both modern Stockfish (UCI_ShowWDL) and Lc0.
+    # `None` when the engine doesn't report it.
+    wdl: tuple[float, float, float] | None = None
 
 
 def _pov_score_to_cp(score: chess.engine.PovScore, turn: chess.Color) -> float:
@@ -87,7 +91,16 @@ class Engine:
     def __init__(self, threads: int = 2, hash_mb: int = 256) -> None:
         path = _stockfish_path()
         self._engine = chess.engine.SimpleEngine.popen_uci(path)
-        self._engine.configure({"Threads": threads, "Hash": hash_mb})
+        cfg = {"Threads": threads, "Hash": hash_mb}
+        # Modern Stockfish supports a contempt-adjusted WDL model via
+        # this UCI option. Best-effort — ignore if the build doesn't
+        # know it.
+        for k, v in (("UCI_ShowWDL", True),):
+            try:
+                self._engine.configure({k: v})
+            except Exception:
+                pass
+        self._engine.configure(cfg)
 
     # -- lifecycle ------------------------------------------------------
     def close(self) -> None:
@@ -121,12 +134,27 @@ class Engine:
             pv = info.get("pv") or []
             if not pv:
                 continue
+            wdl = info.get("wdl")
+            wdl_tuple: tuple[float, float, float] | None = None
+            if wdl is not None:
+                try:
+                    pov_wdl = wdl.pov(board.turn)
+                    total = pov_wdl.wins + pov_wdl.draws + pov_wdl.losses
+                    if total > 0:
+                        wdl_tuple = (
+                            pov_wdl.wins / total,
+                            pov_wdl.draws / total,
+                            pov_wdl.losses / total,
+                        )
+                except Exception:
+                    wdl_tuple = None
             out.append(
                 Variation(
                     move=pv[0],
                     score_cp=_pov_score_to_cp(info["score"], board.turn),
                     pv=list(pv),
                     depth=int(info.get("depth", depth)),
+                    wdl=wdl_tuple,
                 )
             )
         return out

@@ -47,6 +47,7 @@ from typing import Any
 import chess
 
 from .engine import Engine, material_balance, PIECE_CP, MATE_SCORE, _pov_score_to_cp
+from .engine_pool import EnginePool, make_pool, DEFAULT_POOL_SIZE
 from .human_model import HumanModel, get_human_model, PredictedMove
 from .lc0_engine import get_engine
 from .lichess_explorer import LichessExplorer
@@ -191,6 +192,18 @@ class GameSession:
             "lc0" if self._engine.__class__.__name__ == "Lc0Engine" else "stockfish"
         )
         self.engine_limit_kind = self._engine.limit_kind  # "depth" or "nodes"
+
+        # Parallel helper pool for sub-evals. Lazily built on first use
+        # because spawning N engines takes seconds — we don't want to
+        # block session creation. Set CD_POOL_SIZE=0 to disable.
+        self._pool: EnginePool | None = None
+        self._pool_lock = threading.Lock()
+        self._engine_type_for_pool = engine_type
+        # Pool workers run lighter than the main engine: 1 thread each
+        # so a pool-of-4 fits on a 4-core sandbox without contention,
+        # and a pool-of-8 fits on a 12-core Colab. Override via
+        # CD_POOL_THREADS.
+        self._pool_threads = int(os.environ.get("CD_POOL_THREADS", "1"))
         self._explorer = explorer or (
             LichessExplorer(
                 ratings=(max(1000, elo - 200), elo, min(2500, elo + 200)),
@@ -397,6 +410,26 @@ class GameSession:
             self._engine.close()
         except Exception:
             pass
+        with self._pool_lock:
+            if self._pool is not None:
+                try:
+                    self._pool.close()
+                except Exception:
+                    pass
+                self._pool = None
+
+    def _get_pool(self) -> EnginePool | None:
+        """Lazily build the helper pool the first time we need parallel work."""
+        if DEFAULT_POOL_SIZE <= 0:
+            return None
+        with self._pool_lock:
+            if self._pool is None:
+                self._pool = make_pool(
+                    engine_type=self._engine_type_for_pool,
+                    size=DEFAULT_POOL_SIZE,
+                    threads_per_engine=self._pool_threads,
+                )
+            return self._pool
 
     # ----- worker thread ----- #
 
@@ -633,32 +666,46 @@ class GameSession:
         bot_pov = board.turn
         if cfg.candidates > 0 and cfg.replies > 0:
             prep_start = time.monotonic()
-            sub_eval_count = 0
+            # Build the batch of all (cand, reply) sub-positions, then
+            # dispatch via the helper pool. With pool_size=4 and 40
+            # sub-positions, this is ~4x faster than the old serial loop
+            # on a multi-core / multi-GPU box.
+            jobs: list[tuple[chess.Board, bool, int]] = []
+            keys: list[tuple[str, str]] = []
             for cand_uci in candidate_ucis[: cfg.candidates]:
-                if self._restart_event.is_set() or self._stop_event.is_set():
-                    break
                 sub = sub_boards.get(cand_uci)
                 if sub is None:
                     continue
                 replies = predicted.get(cand_uci, [])[: cfg.replies]
                 for pred in replies:
-                    if self._restart_event.is_set() or self._stop_event.is_set():
-                        break
                     try:
                         sub2 = sub.copy()
                         sub2.push(pred.move)
                     except Exception:
                         continue
+                    jobs.append((sub2, bot_pov, cfg.depth))
+                    keys.append((cand_uci, pred.move.uci()))
+
+            pool = self._get_pool()
+            if pool is not None and len(jobs) > 1:
+                results = pool.evaluate_batch(jobs)
+                for k, v in zip(keys, results):
+                    if v is not None:
+                        sub_evals[k] = v
+            else:
+                # Fallback: serial on the main engine.
+                for (b, pov, d), k in zip(jobs, keys):
+                    if self._restart_event.is_set() or self._stop_event.is_set():
+                        break
                     try:
-                        eval_cp = self._engine.evaluate_for(sub2, bot_pov, depth=cfg.depth)
+                        sub_evals[k] = self._engine.evaluate_for(b, pov, depth=d)
                     except Exception:
                         continue
-                    sub_evals[(cand_uci, pred.move.uci())] = eval_cp
-                    sub_eval_count += 1
             log.debug(
-                "session %s prep mode=%s sub_evals=%d in %.2fs",
-                self.session_id, analysis_mode, sub_eval_count,
+                "session %s prep mode=%s sub_evals=%d in %.2fs (pool=%s)",
+                self.session_id, analysis_mode, len(sub_evals),
                 time.monotonic() - prep_start,
+                pool.size if pool else "off",
             )
 
         # Setup-mode look-ahead: for the top-K candidates, simulate
@@ -897,6 +944,21 @@ class GameSession:
             if not pv or score_obj is None:
                 continue
             score_cp = _pov_score_to_cp(score_obj, bot_pov)
+            # Extract WDL if engine reports it (modern SF + Lc0 do).
+            wdl_obj = info.get("wdl")
+            wdl_tuple: tuple[float, float, float] | None = None
+            if wdl_obj is not None:
+                try:
+                    pov_wdl = wdl_obj.pov(bot_pov)
+                    total = pov_wdl.wins + pov_wdl.draws + pov_wdl.losses
+                    if total > 0:
+                        wdl_tuple = (
+                            pov_wdl.wins / total,
+                            pov_wdl.draws / total,
+                            pov_wdl.losses / total,
+                        )
+                except Exception:
+                    pass
             if objective_best_eval is None:
                 objective_best_eval = score_cp
                 objective_best_uci = pv[0].uci()
@@ -905,6 +967,7 @@ class GameSession:
                 board, pv, score_cp, idx + 1,
                 objective_best_eval, material_before, bot_pov,
                 prep, style, elo, analysis_mode, playstyle,
+                wdl=wdl_tuple,
             )
             if cand is not None:
                 candidates.append(cand)
@@ -945,6 +1008,7 @@ class GameSession:
         elo: int,
         analysis_mode: str,
         playstyle: str,
+        wdl: tuple[float, float, float] | None = None,
     ) -> Candidate | None:
         move = pv[0]
         try:
@@ -1080,6 +1144,7 @@ class GameSession:
             is_mate_for_us=is_mate_for_us,
             mate_in=mate_in,
             trap_potential_cp=trap_potential_cp,
+            wdl=wdl,
         )
         util = troll_utility(features, elo=elo, style=style, playstyle=playstyle)
 
@@ -1100,6 +1165,7 @@ class GameSession:
             trap_depth=0,
             notes=util.notes,
             trap_potential_cp=trap_potential_cp,
+            wdl=wdl,
         )
 
         # Trap-DB bonus.

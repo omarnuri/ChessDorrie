@@ -52,6 +52,12 @@ class TrollFeatures:
     # Setup-mode signal: largest sacrifice opportunity available 2 plies ahead
     trap_potential_cp: float = 0.0
 
+    # Win/Draw/Loss probabilities from the side-to-move's POV after this
+    # move (engines that report wdl). High win + low draw = sharp position
+    # ripe for human error; high draw with similar cp = quiet, harder
+    # to troll.
+    wdl: tuple[float, float, float] | None = None
+
 
 # Opponent-style profiles. Used to bias the utility weights.
 #   "greedy"   — grabs every pawn, follows tactics greedily. Vulnerable to bait.
@@ -248,6 +254,34 @@ def troll_utility(
         # Greedy players also miss in non-sacrificial positions —
         # double-count the human-factor bonus a bit.
         score += max(0, human_factor) * 0.4
+
+    # --- 7c. WDL sharpness bonus ----------------------------------------
+    # Engines that report win/draw/loss probabilities give us a much
+    # richer signal than centipawn eval. A position with low draw
+    # probability is *sharp* — small mistakes cascade into wins or
+    # losses. Humans crack faster in sharp positions, so we bonus.
+    #
+    # A position with high draw probability is *technical* — even with
+    # a small cp advantage it's hard to convert against a defending
+    # human. Discount slightly.
+    if f.wdl is not None:
+        w, d, l = f.wdl
+        # Sharpness: 1 - draw_prob, scaled. 0.95 draw → sharpness 0.05.
+        # 0.10 draw → sharpness 0.90.
+        sharpness = max(0.0, 1.0 - d)
+        # Asymmetry penalty: if loss > win, it's sharp against us — bad.
+        if w > l:
+            sharp_bonus = 60.0 * sharpness * (w - l)
+            if sharp_bonus > 10:
+                score += sharp_bonus
+                if sharpness > 0.6 and (w - l) > 0.2:
+                    notes.append(
+                        f"💥 sharp position ({w*100:.0f}/{d*100:.0f}/{l*100:.0f} wdl) — humans crack"
+                    )
+        elif d > 0.7 and abs(f.expected_eval) < 100:
+            # Drawish balanced — discount; troll utility hates quiet
+            score -= 30
+            notes.append("🥱 drawish — hard to make humans crack")
 
     # --- 8. Boring-move dampener ---------------------------------------
     # If a move is just SF's best with no sacrificial spice and no human

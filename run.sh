@@ -16,6 +16,9 @@ fi
 #   CD_HYBRID_DEPTH=14             (default 10; sub-evals in hybrid mode)
 #   CD_DEEP_DEPTH=18               (default 14; sub-evals in deep mode)
 #   CD_SETUP_DEEP_DEPTH=20         (default 16; setup_deep alternating lookahead)
+#   CD_POOL_SIZE=8                 (default 4; parallel sub-eval workers)
+#   CD_POOL_THREADS=2              (default 1; threads per pool worker)
+#   CHESS_ENGINE=lc0               (default auto; force Lc0+GPU as main engine)
 # Legacy POST endpoint tuning:
 export CD_THREADS="${CD_THREADS:-8}"
 export CD_DEPTH="${CD_DEPTH:-18}"

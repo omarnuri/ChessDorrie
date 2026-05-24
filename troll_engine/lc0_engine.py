@@ -178,11 +178,26 @@ class Lc0Engine:
             pv = info.get("pv") or []
             if not pv:
                 continue
+            wdl = info.get("wdl")
+            wdl_tuple: tuple[float, float, float] | None = None
+            if wdl is not None:
+                try:
+                    pov_wdl = wdl.pov(board.turn)
+                    total = pov_wdl.wins + pov_wdl.draws + pov_wdl.losses
+                    if total > 0:
+                        wdl_tuple = (
+                            pov_wdl.wins / total,
+                            pov_wdl.draws / total,
+                            pov_wdl.losses / total,
+                        )
+                except Exception:
+                    wdl_tuple = None
             out.append(Variation(
                 move=pv[0],
                 score_cp=_pov_score_to_cp(info["score"], board.turn),
                 pv=list(pv),
                 depth=int(info.get("depth", 0)),  # selective depth
+                wdl=wdl_tuple,
             ))
         return out
 

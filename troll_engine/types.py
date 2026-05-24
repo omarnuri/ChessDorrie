@@ -60,6 +60,11 @@ class Candidate:
     # bot personality (prefers moves that build to sacrifices).
     trap_potential_cp: float = 0.0
 
+    # Win/Draw/Loss probabilities after this move (side-to-move POV).
+    # Tuple `(win, draw, loss)` summing to ~1.0, or None when the
+    # engine doesn't report wdl.
+    wdl: tuple[float, float, float] | None = None
+
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
         return d
