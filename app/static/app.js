@@ -24,16 +24,50 @@ const boardEl = document.getElementById("board");
 const cg = Chessground(boardEl, {
   fen: state.fen,
   orientation: state.orientation,
+  turnColor: "white",
   draggable: { enabled: true, showGhost: true },
-  movable: { free: true, color: "both", showDests: false },
+  movable: {
+    free: false,                 // strict legal-only mode
+    color: "both",
+    showDests: true,
+    dests: new Map(),            // populated by refreshLegalMoves()
+    events: {
+      after: (orig, dest, _metadata) => handleUserMove(orig, dest),
+    },
+  },
   drawable: { enabled: true, defaultSnapToValidMove: true },
   highlight: { lastMove: true, check: true },
-  events: {
-    move: (orig, dest) => handleUserMove(orig, dest),
-  },
 });
 
 window.addEventListener("resize", () => cg.redrawAll());
+
+// Fetch legal destinations for the current state.fen and apply to the board.
+async function refreshLegalMoves() {
+  try {
+    const res = await fetch("/api/legal-moves", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ fen: state.fen }),
+    });
+    if (!res.ok) return;
+    const data = await res.json();
+    const dests = new Map();
+    for (const [from, to] of Object.entries(data.dests || {})) {
+      dests.set(from, to);
+    }
+    cg.set({
+      fen: data.fen,
+      turnColor: data.turn,
+      check: data.in_check,
+      movable: { dests },
+    });
+    if (data.is_game_over) {
+      setStatus(data.is_checkmate ? "Checkmate." : (data.is_stalemate ? "Stalemate." : "Game over."));
+    }
+  } catch (e) {
+    /* ignore — analyse() will surface errors */
+  }
+}
 
 // --- helpers ---------------------------------------------------------
 
@@ -246,10 +280,8 @@ async function playMove(uciOrSan) {
     const data = await res.json();
     state.fen = data.fen;
     document.getElementById("fen-input").value = state.fen;
-    cg.set({ fen: state.fen });
-    if (data.is_game_over) {
-      setStatus(data.is_checkmate ? "Checkmate." : (data.is_stalemate ? "Stalemate." : "Game over."));
-    } else {
+    await refreshLegalMoves();
+    if (!data.is_game_over) {
       await analyse();
     }
   } catch (e) {
@@ -258,24 +290,28 @@ async function playMove(uciOrSan) {
 }
 
 async function handleUserMove(orig, dest) {
-  // chessground's `free: true` will accept any move; we round-trip through the
-  // backend to validate (and to handle promotion to queen as default).
+  // chessground only fires `movable.events.after` for legal moves now,
+  // so we can submit straight away. Underpromotion currently defaults
+  // to queen (chessground's `promotion` hook is future work).
   await playMove(orig + dest + (isPromotion(orig, dest) ? "q" : ""));
 }
 
 function isPromotion(orig, dest) {
-  // Naive: if a pawn reaches the last rank, treat as promotion. The
-  // backend will reject if it's not actually a pawn.
+  // A move ending on rank 1 or 8 by a pawn is a promotion. We don't
+  // know the moving piece here (chessground already moved it), so we
+  // approximate: only pawns ever reach rank 1 or 8, and the backend
+  // rejects spurious "q" suffixes on non-promotion moves.
   return (dest[1] === "8" || dest[1] === "1");
 }
 
 // --- buttons ---------------------------------------------------------
 
-document.getElementById("load-btn").addEventListener("click", () => {
+document.getElementById("load-btn").addEventListener("click", async () => {
   const v = document.getElementById("fen-input").value.trim();
   try {
     state.fen = v;
     cg.set({ fen: state.fen });
+    await refreshLegalMoves();
     setStatus("Loaded.");
   } catch (e) {
     setStatus("Invalid FEN.");
@@ -287,6 +323,7 @@ document.getElementById("analyse-btn").addEventListener("click", async () => {
   state.elo = parseInt(document.getElementById("elo-select").value, 10);
   state.style = document.getElementById("style-select").value;
   cg.set({ fen: state.fen });
+  await refreshLegalMoves();
   await analyse();
 });
 
@@ -304,5 +341,9 @@ document.getElementById("style-select").addEventListener("change", (e) => {
   if (state.lastResult) analyse();  // re-rank with the new style
 });
 
-// Auto-analyse on load.
-analyse();
+// Auto-analyse on load (and prime the legal-moves map first so drag-drop
+// doesn't go through a "no dests" window).
+(async () => {
+  await refreshLegalMoves();
+  await analyse();
+})();

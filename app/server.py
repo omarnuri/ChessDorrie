@@ -90,11 +90,54 @@ class MoveRequest(BaseModel):
     move: str  # UCI or SAN
 
 
+class LegalMovesRequest(BaseModel):
+    fen: str
+
+
+def _legal_dests(board: chess.Board) -> dict[str, list[str]]:
+    """Map from origin square to list of legal destination squares.
+
+    Used by the chessground frontend to restrict drag-and-drop to
+    legal moves only. Promotions collapse into the destination — the
+    UI defaults underpromotions to queen.
+    """
+    out: dict[str, list[str]] = {}
+    for m in board.legal_moves:
+        out.setdefault(chess.SQUARE_NAMES[m.from_square], []).append(
+            chess.SQUARE_NAMES[m.to_square]
+        )
+    # Deduplicate (a single move can produce multiple promotion-target
+    # entries to the same square).
+    for k, v in out.items():
+        out[k] = sorted(set(v))
+    return out
+
+
 # --- endpoints ------------------------------------------------------- #
 
 @app.get("/api/health")
 def health():
     return {"ok": True}
+
+
+@app.post("/api/legal-moves")
+def legal_moves(req: LegalMovesRequest):
+    """Return the legal-move destination map for `fen`, plus a few
+    derived flags useful to the UI.
+    """
+    try:
+        board = chess.Board(req.fen)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid FEN: {e}")
+    return {
+        "fen": board.fen(),
+        "dests": _legal_dests(board),
+        "turn": "white" if board.turn else "black",
+        "in_check": board.is_check(),
+        "is_game_over": board.is_game_over(),
+        "is_checkmate": board.is_checkmate(),
+        "is_stalemate": board.is_stalemate(),
+    }
 
 
 @app.post("/api/analyse")
