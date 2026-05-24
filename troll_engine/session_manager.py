@@ -63,6 +63,7 @@ class SessionManager:
         elo: int = 1500,
         style: str = "balanced",
         bot_side: chess.Color | None = None,
+        analysis_mode: str = "lite",
         starting_fen: str | None = None,
     ) -> GameSession:
         with self._lock:
@@ -73,6 +74,7 @@ class SessionManager:
             session = GameSession(
                 sid, self._loop,
                 elo=elo, style=style, bot_side=bot_side,
+                analysis_mode=analysis_mode,
                 weights_dir=self._weights_dir,
                 explorer=self._explorer,
                 trap_db=self._trap_db,

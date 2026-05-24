@@ -136,6 +136,12 @@ async def _dispatch(session, ws: WebSocket, msg: dict) -> None:
             session.set_elo(max(1000, min(2500, elo)))
             await _broadcast_position(session)
 
+        elif t == "mode":
+            mode = msg.get("mode", "lite")
+            if mode in ("lite", "hybrid", "deep"):
+                session.set_analysis_mode(mode)
+                await _broadcast_position(session)
+
         elif t == "reset":
             fen = str(msg.get("fen", chess.STARTING_FEN))
             if session.reset_to(fen):

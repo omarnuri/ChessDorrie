@@ -80,15 +80,48 @@ class PreparedPosition:
 
     Computed once when a new position arrives; consulted on every
     broadcast tick without touching the engine.
+
+    `sub_evals` is populated only in `hybrid`/`deep` analysis modes —
+    it maps `(candidate_uci, reply_uci) → cp_from_bot_pov` for the
+    top-K candidates × top-N predicted replies. Built during prep
+    while the engine is still free; the streaming phase reuses these
+    values for every snapshot.
     """
 
     fen: str
     predicted_replies: dict[str, list[PredictedMove]]  # candidate_uci → top replies
     explorer_total: int
     explorer_by_uci: dict[str, dict]  # uci → {wins, draws, total, win_rate}
+    sub_evals: dict[tuple[str, str], float] = field(default_factory=dict)
 
 
-CacheKey = tuple[str, str, int, "int | None"]  # (fen_key, style, elo, bot_side)
+# Analysis-precision modes.
+#
+#   "lite"   — no per-reply sub-evals (expected_eval = objective_eval).
+#              Fastest; pure trap-DB + Explorer + sacrifice-detection signal.
+#   "hybrid" — sub-evals for the top 5 candidates × top 3 replies at depth 8.
+#              ~1-2 s prep cost; brings back the human_factor and anger
+#              signals for the moves that matter most.
+#   "deep"   — sub-evals for the top 8 candidates × top 5 replies at depth 12.
+#              ~5-10 s prep cost; high-fidelity troll utility everywhere.
+ANALYSIS_MODES = ("lite", "hybrid", "deep")
+
+
+@dataclass
+class _ModeConfig:
+    candidates: int     # top-K candidates we sub-evaluate
+    replies: int        # top-N replies per candidate
+    depth: int          # sub-eval depth
+
+
+_MODE_CONFIGS: dict[str, _ModeConfig] = {
+    "lite":   _ModeConfig(0, 0, 0),
+    "hybrid": _ModeConfig(5, 3, 8),
+    "deep":   _ModeConfig(8, 5, 12),
+}
+
+
+CacheKey = tuple[str, str, int, "int | None", str]  # (fen_key, style, elo, bot_side, mode)
 
 
 def _fen_key(fen: str) -> str:
@@ -108,6 +141,7 @@ class GameSession:
         elo: int = 1500,
         style: str = "balanced",
         bot_side: chess.Color | None = None,
+        analysis_mode: str = "lite",
         weights_dir: str = "weights",
         explorer: LichessExplorer | None = None,
         trap_db: TrapDB | None = None,
@@ -120,6 +154,7 @@ class GameSession:
         self.elo = elo
         self.style = style
         self.bot_side = bot_side  # None = observer (think for side-to-move)
+        self.analysis_mode = analysis_mode if analysis_mode in ANALYSIS_MODES else "lite"
         self.weights_dir = weights_dir
 
         self._engine = Engine(threads=engine_threads)
@@ -213,6 +248,7 @@ class GameSession:
             "bot_side": ("white" if self.bot_side else "black") if self.bot_side is not None else None,
             "style": self.style,
             "elo": self.elo,
+            "analysis_mode": self.analysis_mode,
         }
 
     def submit_move(self, uci: str) -> bool:
@@ -262,6 +298,13 @@ class GameSession:
         # TODO: rebuild self._human / self._search on Elo change.
         self._restart_event.set()
 
+    def set_analysis_mode(self, mode: str) -> None:
+        if mode not in ANALYSIS_MODES:
+            return
+        with self._state_lock:
+            self.analysis_mode = mode
+        self._restart_event.set()
+
     def close(self) -> None:
         self._stop_event.set()
         self._restart_event.set()
@@ -276,9 +319,12 @@ class GameSession:
 
     # ----- worker thread ----- #
 
-    def _snapshot_state(self) -> tuple[chess.Board, str, int, "int | None"]:
+    def _snapshot_state(self) -> tuple[chess.Board, str, int, "int | None", str]:
         with self._state_lock:
-            return (self.board.copy(stack=False), self.style, self.elo, self.bot_side)
+            return (
+                self.board.copy(stack=False),
+                self.style, self.elo, self.bot_side, self.analysis_mode,
+            )
 
     def _board_changed(self, snapshot_fen: str) -> bool:
         with self._state_lock:
@@ -307,14 +353,18 @@ class GameSession:
                 time.sleep(0.5)
 
     def _iterate_one_position(self) -> None:
-        board, style, elo, bot_side = self._snapshot_state()
+        board, style, elo, bot_side, analysis_mode = self._snapshot_state()
 
         # If the bot's side is set and it isn't the bot's turn to move,
         # we still analyse — but the search models the "opponent" as the
         # side to move. The UI uses bot_side mostly to constrain the
         # user's drag-drop, not to skip analysis.
         snapshot_fen = board.fen()
-        ck: CacheKey = (_fen_key(snapshot_fen), style, elo, bot_side if bot_side is None else int(bot_side))
+        ck: CacheKey = (
+            _fen_key(snapshot_fen), style, elo,
+            bot_side if bot_side is None else int(bot_side),
+            analysis_mode,
+        )
 
         self._restart_event.clear()
 
@@ -327,8 +377,8 @@ class GameSession:
                 "cache_hit": True,
             })
 
-        # 2) Cheap prep (top candidates + Maia/Explorer predictions).
-        prep = self._prepare(board, style, elo)
+        # 2) Prep: predictions + Lichess Explorer + (if non-lite) per-reply sub-evals.
+        prep = self._prepare(board, style, elo, analysis_mode)
         if self._restart_event.is_set() or self._stop_event.is_set():
             return
 
@@ -348,7 +398,8 @@ class GameSession:
                     now = time.monotonic()
                     if now - last_broadcast >= BROADCAST_INTERVAL:
                         result = self._assemble_from_streaming(
-                            board, list(analysis.multipv), prep, style, elo, bot_side
+                            board, list(analysis.multipv), prep, style, elo, bot_side,
+                            analysis_mode,
                         )
                         if result is not None:
                             self._cache_put(ck, result)
@@ -381,25 +432,32 @@ class GameSession:
 
     # ----- prep phase: precompute predictions once per position ----- #
 
-    def _prepare(self, board: chess.Board, style: str, elo: int) -> PreparedPosition:
+    def _prepare(
+        self, board: chess.Board, style: str, elo: int, analysis_mode: str
+    ) -> PreparedPosition:
         # Predicted replies for top candidates: ask the human model on
         # the position AFTER each plausible candidate move. We don't
         # know the candidates yet here, so use a shallow multipv to get
         # them.
+        cfg = _MODE_CONFIGS[analysis_mode]
         predicted: dict[str, list[PredictedMove]] = {}
+        candidate_ucis: list[str] = []
+        sub_boards: dict[str, chess.Board] = {}
         try:
             shallow = self._engine.multipv(board, k=DEFAULT_MULTIPV, depth=10)
             for var in shallow:
                 if not var.pv:
                     continue
                 cand_uci = var.move.uci()
+                candidate_ucis.append(cand_uci)
                 sub = board.copy()
                 try:
                     sub.push(var.move)
                 except Exception:
                     continue
+                sub_boards[cand_uci] = sub
                 try:
-                    preds = self._human.predict(sub, top_k=5)
+                    preds = self._human.predict(sub, top_k=max(5, cfg.replies))
                 except Exception:
                     preds = []
                 predicted[cand_uci] = preds
@@ -426,11 +484,48 @@ class GameSession:
             except Exception:
                 pass
 
+        # Per-reply sub-evals: in hybrid/deep modes we evaluate the
+        # position after each (candidate, predicted reply) so the troll
+        # utility can use a real expected_eval / worst_case rather than
+        # collapsing onto the objective.
+        sub_evals: dict[tuple[str, str], float] = {}
+        bot_pov = board.turn
+        if cfg.candidates > 0 and cfg.replies > 0:
+            prep_start = time.monotonic()
+            sub_eval_count = 0
+            for cand_uci in candidate_ucis[: cfg.candidates]:
+                if self._restart_event.is_set() or self._stop_event.is_set():
+                    break
+                sub = sub_boards.get(cand_uci)
+                if sub is None:
+                    continue
+                replies = predicted.get(cand_uci, [])[: cfg.replies]
+                for pred in replies:
+                    if self._restart_event.is_set() or self._stop_event.is_set():
+                        break
+                    try:
+                        sub2 = sub.copy()
+                        sub2.push(pred.move)
+                    except Exception:
+                        continue
+                    try:
+                        eval_cp = self._engine.evaluate_for(sub2, bot_pov, depth=cfg.depth)
+                    except Exception:
+                        continue
+                    sub_evals[(cand_uci, pred.move.uci())] = eval_cp
+                    sub_eval_count += 1
+            log.debug(
+                "session %s prep mode=%s sub_evals=%d in %.2fs",
+                self.session_id, analysis_mode, sub_eval_count,
+                time.monotonic() - prep_start,
+            )
+
         return PreparedPosition(
             fen=board.fen(),
             predicted_replies=predicted,
             explorer_total=explorer_total,
             explorer_by_uci=explorer_by_uci,
+            sub_evals=sub_evals,
         )
 
     # ----- streaming assembly: build candidates from current multipv ----- #
@@ -443,6 +538,7 @@ class GameSession:
         style: str,
         elo: int,
         bot_side: chess.Color | None,
+        analysis_mode: str,
     ) -> AnalysisResult | None:
         bot_pov = board.turn
         material_before = material_balance(board, bot_pov)
@@ -467,7 +563,7 @@ class GameSession:
             cand = self._build_candidate(
                 board, pv, score_cp, idx + 1,
                 objective_best_eval, material_before, bot_pov,
-                prep, style, elo
+                prep, style, elo, analysis_mode,
             )
             if cand is not None:
                 candidates.append(cand)
@@ -506,6 +602,7 @@ class GameSession:
         prep: PreparedPosition,
         style: str,
         elo: int,
+        analysis_mode: str,
     ) -> Candidate | None:
         move = pv[0]
         try:
@@ -537,30 +634,87 @@ class GameSession:
                     is_sac = True
                     sac_value = -delta
 
-        # Build replies list from prep (Maia + Explorer); eval_after is
-        # approximated as the candidate's own PV score (the side-to-move
-        # POV eval after SF's continued best play).
         cand_uci = move.uci()
         replies_predicted = prep.predicted_replies.get(cand_uci, [])
+
+        # Per-reply data: if prep ran sub_evals (hybrid/deep), use those
+        # for eval_after and material_after; otherwise fall back to the
+        # PV-score approximation (lite).
         replies_out: list[Reply] = []
-        for i, p in enumerate(replies_predicted):
+        weighted_eval = 0.0
+        worst_case = float("inf")
+        best_case = float("-inf")
+        weighted_material = 0.0
+        prob_total = 0.0
+        for p in replies_predicted:
             try:
                 r_san = after.san(p.move)
             except Exception:
                 r_san = p.move.uci()
-            mat_after = material_after - material_before if p.move == (pv[1] if len(pv) >= 2 else None) else 0
+            reply_key = (cand_uci, p.move.uci())
+            sub_eval = prep.sub_evals.get(reply_key)
+            if sub_eval is not None:
+                eval_after = sub_eval
+                # Material after the actual reply
+                try:
+                    sub2 = after.copy()
+                    sub2.push(p.move)
+                    mat_after_reply = material_balance(sub2, bot_pov) - material_before
+                except Exception:
+                    mat_after_reply = 0
+            else:
+                # Lite fallback: PV-eval approximation, material only
+                # accurate for the SF best reply.
+                eval_after = score_cp
+                mat_after_reply = (
+                    material_after - material_before
+                    if (len(pv) >= 2 and p.move == pv[1]) else 0
+                )
+
             replies_out.append(Reply(
                 move_uci=p.move.uci(),
                 move_san=r_san,
                 probability=p.probability,
-                eval_after=score_cp,  # approximation: SF's PV-eval
-                material_after=mat_after,
+                eval_after=eval_after,
+                material_after=mat_after_reply,
                 is_best_reply=(len(pv) >= 2 and p.move == pv[1]),
             ))
+            weighted_eval += p.probability * eval_after
+            weighted_material += p.probability * mat_after_reply
+            worst_case = min(worst_case, eval_after)
+            best_case = max(best_case, eval_after)
+            prob_total += p.probability
 
-        # The lite tier collapses expected/worst/best onto the objective eval.
-        expected_eval = score_cp
-        worst_case_eval = score_cp
+        # If we got real per-reply evals, use the weighted aggregates.
+        # Otherwise (lite mode or no predictions), collapse onto SF score.
+        have_honest = analysis_mode != "lite" and any(
+            (cand_uci, p.move.uci()) in prep.sub_evals for p in replies_predicted
+        ) and prob_total > 0
+        if have_honest:
+            # Normalize in case the top-K probs didn't sum to 1.
+            expected_eval = weighted_eval / prob_total
+            expected_material_cp = weighted_material / prob_total
+            worst_case_eval = worst_case
+            best_case_eval = best_case
+            # Anger: opponent gives us cp when they don't play their best reply.
+            best_reply_eval_for_opp = min(r.eval_after for r in replies_out)
+            prob_blunder = 0.0
+            expected_loss = 0.0
+            for r in replies_out:
+                drop = r.eval_after - best_reply_eval_for_opp  # ≥0 in bot's POV
+                if drop > 150:
+                    prob_blunder += r.probability
+                expected_loss += r.probability * drop
+            prob_blunder = min(1.0, prob_blunder / prob_total)
+            expected_loss = expected_loss / prob_total
+        else:
+            expected_eval = score_cp
+            expected_material_cp = float(material_after - material_before)
+            worst_case_eval = score_cp
+            best_case_eval = score_cp
+            prob_blunder = 0.0
+            expected_loss = 0.0
+
         is_mate_for_us = score_cp > (MATE_SCORE - 1000)
         mate_in: int | None = None
         if is_mate_for_us:
@@ -572,13 +726,13 @@ class GameSession:
             objective_best_eval=objective_best_eval,
             expected_eval=expected_eval,
             worst_case_eval=worst_case_eval,
-            best_case_eval=score_cp,
-            expected_material_cp=float(material_after - material_before),
+            best_case_eval=best_case_eval,
+            expected_material_cp=expected_material_cp,
             reply_entropy=_entropy_of(replies_predicted),
             is_sacrifice=is_sac,
             sacrifice_value_cp=sac_value,
-            expected_eval_loss_to_opponent=0.0,
-            prob_opponent_blunders=0.0,
+            expected_eval_loss_to_opponent=expected_loss,
+            prob_opponent_blunders=prob_blunder,
             is_mate_for_us=is_mate_for_us,
             mate_in=mate_in,
         )
@@ -593,7 +747,7 @@ class GameSession:
             sacrifice_value=sac_value,
             expected_eval=expected_eval,
             worst_case_eval=worst_case_eval,
-            expected_material=float(material_after - material_before),
+            expected_material=expected_material_cp,
             replies=replies_out,
             troll_score=util.troll_score,
             anger_probability=util.anger_probability,

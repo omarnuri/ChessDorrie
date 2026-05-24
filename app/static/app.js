@@ -24,6 +24,7 @@ const state = {
   fen: STARTING_FEN,
   elo: 1500,
   style: "balanced",
+  mode: "lite",            // "lite" | "hybrid" | "deep"
   side: null,              // "white" | "black" | null (observer)
   orientation: "white",
   sessionId: localStorage.getItem("chessdorrie_session") || "new",
@@ -72,11 +73,12 @@ function connect() {
   ws.onopen = () => {
     setStatus("Connected. Engine pondering…");
     state.reconnectDelay = 1000;
-    // After connect, push our current style/elo/side preferences so the
-    // session uses them.
+    // After connect, push our current preferences so the session
+    // syncs to them.
     sendJson({ type: "style", style: state.style });
     sendJson({ type: "elo", elo: state.elo });
     sendJson({ type: "side", color: state.side });
+    sendJson({ type: "mode", mode: state.mode });
   };
 
   ws.onmessage = (ev) => {
@@ -378,6 +380,12 @@ document.getElementById("elo-select").addEventListener("change", (e) => {
 document.getElementById("style-select").addEventListener("change", (e) => {
   state.style = e.target.value;
   sendJson({ type: "style", style: state.style });
+});
+
+document.getElementById("mode-select").addEventListener("change", (e) => {
+  state.mode = e.target.value;
+  setStatus(`Precision: ${state.mode} — re-preparing position…`);
+  sendJson({ type: "mode", mode: state.mode });
 });
 
 // Side selector — radio group; "" means observer.
