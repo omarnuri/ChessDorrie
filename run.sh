@@ -20,6 +20,12 @@ export CD_HOST="${CD_HOST:-0.0.0.0}"
 export CD_PORT="${CD_PORT:-8000}"
 export PYTHONPATH="${PYTHONPATH:-.}"
 
+# Optional fine-tuned model: TRAP_MODEL=/path/to/checkpoint.pt
+# (overrides Maia/Lc0 for the human-move predictor)
+if [ -n "${TRAP_MODEL:-}" ]; then
+    export TRAP_MODEL
+fi
+
 echo "==> ChessDorrie on http://${CD_HOST}:${CD_PORT}"
 echo "    Stockfish: $(command -v stockfish || echo /usr/games/stockfish)"
 echo "    Lc0:       $(command -v lc0 2>/dev/null || echo '(missing — softmax fallback)')"

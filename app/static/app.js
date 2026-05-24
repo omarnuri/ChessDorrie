@@ -25,8 +25,9 @@ const state = {
   elo: 1500,
   style: "balanced",
   mode: "lite",            // "lite" | "hybrid" | "deep"
-  playstyle: "direct",     // "direct" | "setup"
+  playstyle: "direct",     // "direct" | "setup" | "setup_deep"
   autoplay: false,
+  autostyle: false,
   side: null,              // "white" | "black" | null (observer)
   orientation: "white",
   sessionId: localStorage.getItem("chessdorrie_session") || "new",
@@ -83,6 +84,7 @@ function connect() {
     sendJson({ type: "mode", mode: state.mode });
     sendJson({ type: "playstyle", playstyle: state.playstyle });
     sendJson({ type: "autoplay", on: state.autoplay });
+    sendJson({ type: "autostyle", on: state.autostyle });
   };
 
   ws.onmessage = (ev) => {
@@ -156,6 +158,36 @@ function applyPosition(p) {
   if (p.is_game_over) {
     setStatus(p.is_checkmate ? "Checkmate." : (p.is_stalemate ? "Stalemate." : "Game over."));
   }
+  renderOppDetected(p.opp_detected, p.style);
+  // Sync server-applied autostyle change
+  if (p.style && p.style !== state.style) {
+    state.style = p.style;
+    const sel = document.getElementById("style-select");
+    if (sel) sel.value = p.style;
+  }
+}
+
+function renderOppDetected(opp, currentStyle) {
+  const row = document.getElementById("opp-detected-row");
+  if (!opp || opp.observed_moves < 1) {
+    row.style.display = "none";
+    return;
+  }
+  row.style.display = "";
+  const emoji = opp.detected_style === "greedy" ? "😋"
+              : opp.detected_style === "cautious" ? "🪖"
+              : "⚖";
+  const label = document.getElementById("opp-detected");
+  label.innerHTML = `${emoji} ${opp.detected_style} ` +
+    `<span class="hint">(${opp.observed_moves} moves, ` +
+    `${Math.round(opp.confidence * 100)}% conf)</span>`;
+  const applyBtn = document.getElementById("opp-apply-btn");
+  applyBtn.style.display = (opp.detected_style !== currentStyle && opp.confidence > 0.3) ? "" : "none";
+  applyBtn.onclick = () => {
+    state.style = opp.detected_style;
+    document.getElementById("style-select").value = opp.detected_style;
+    sendJson({ type: "style", style: opp.detected_style });
+  };
 }
 
 function sideForMovable(bot_side, turn) {
@@ -402,6 +434,11 @@ document.getElementById("playstyle-select").addEventListener("change", (e) => {
 document.getElementById("autoplay-toggle").addEventListener("change", (e) => {
   state.autoplay = e.target.checked;
   sendJson({ type: "autoplay", on: state.autoplay });
+});
+
+document.getElementById("autostyle-toggle").addEventListener("change", (e) => {
+  state.autostyle = e.target.checked;
+  sendJson({ type: "autostyle", on: state.autostyle });
 });
 
 // Side selector — radio group; "" means observer.

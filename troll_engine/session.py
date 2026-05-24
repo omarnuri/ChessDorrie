@@ -49,6 +49,7 @@ import chess
 from .engine import Engine, material_balance, PIECE_CP, MATE_SCORE, _pov_score_to_cp
 from .human_model import HumanModel, get_human_model, PredictedMove
 from .lichess_explorer import LichessExplorer
+from .opponent_tracker import OpponentTracker
 from .search import TrollSearch
 from .trap_db import TrapDB, default_db, trap_score_for_move
 from .types import AnalysisResult, Candidate, Reply, EngineMetrics
@@ -153,6 +154,7 @@ class GameSession:
         trap_db: TrapDB | None = None,
         engine_threads: int = 2,
         use_explorer: bool = True,
+        trap_model_path: str | None = None,
     ) -> None:
         self.session_id = session_id
         self._loop = loop
@@ -161,7 +163,7 @@ class GameSession:
         self.style = style
         self.bot_side = bot_side  # None = observer (think for side-to-move)
         self.analysis_mode = analysis_mode if analysis_mode in ANALYSIS_MODES else "lite"
-        self.playstyle = playstyle if playstyle in ("direct", "setup") else "direct"
+        self.playstyle = playstyle if playstyle in ("direct", "setup", "setup_deep") else "direct"
         self.autoplay = bool(autoplay)
         self.weights_dir = weights_dir
 
@@ -175,6 +177,7 @@ class GameSession:
         self._human = get_human_model(
             elo, self._engine, weights_dir=weights_dir,
             use_explorer=use_explorer, explorer=self._explorer,
+            trap_model_path=trap_model_path,
         )
         self._trap_db = trap_db or default_db()
         # Reuse the existing search for the prep phase + final scoring.
@@ -185,6 +188,8 @@ class GameSession:
             reply_count=5, subposition_depth=10,
             elo=elo, explorer=self._explorer, trap_db=self._trap_db,
         )
+        self._opp_tracker = OpponentTracker(self._engine)
+        self._autostyle = False  # auto-apply detected style
 
         self._state_lock = threading.Lock()
         self._subscribers: set[Any] = set()  # WebSocket objects
@@ -259,6 +264,8 @@ class GameSession:
             "analysis_mode": self.analysis_mode,
             "playstyle": self.playstyle,
             "autoplay": self.autoplay,
+            "autostyle": self._autostyle,
+            "opp_detected": self._opp_tracker.snapshot().to_dict(),
         }
 
     def submit_move(self, uci: str) -> bool:
@@ -267,12 +274,37 @@ class GameSession:
             mv = chess.Move.from_uci(uci)
         except ValueError:
             return False
+        observe_args: tuple | None = None
         with self._state_lock:
             if mv not in self.board.legal_moves:
                 return False
+            # If the side moving is the OPPONENT (not the bot's side), feed
+            # the tracker. bot_side is the colour the BOT analyses for, so
+            # the opponent is the OTHER side from bot_side. When bot_side
+            # is None (observer), don't track.
+            if self.bot_side is not None and self.board.turn != self.bot_side:
+                observe_args = (self.board.copy(stack=False), mv)
             self.board.push(mv)
+        if observe_args is not None:
+            try:
+                self._opp_tracker.observe(*observe_args)
+            except Exception:
+                log.exception("opp tracker observe failed")
+            # If autostyle is on, apply detected style now
+            if self._autostyle:
+                snap = self._opp_tracker.snapshot()
+                if (snap.detected_style != self.style
+                    and snap.confidence > 0.5):
+                    with self._state_lock:
+                        self.style = snap.detected_style
+                    log.info("autostyle: applied %s (conf %.2f)",
+                             snap.detected_style, snap.confidence)
         self._restart_event.set()
         return True
+
+    def set_autostyle(self, on: bool) -> None:
+        with self._state_lock:
+            self._autostyle = bool(on)
 
     def reset_to(self, fen: str) -> bool:
         try:
@@ -316,7 +348,7 @@ class GameSession:
         self._restart_event.set()
 
     def set_playstyle(self, playstyle: str) -> None:
-        if playstyle not in ("direct", "setup"):
+        if playstyle not in ("direct", "setup", "setup_deep"):
             return
         with self._state_lock:
             self.playstyle = playstyle
@@ -612,7 +644,11 @@ class GameSession:
         # whole point is that opp picks suboptimal moves: even when
         # Maia's #1 reply defends perfectly, #2/#3 might walk into the trap.
         trap_potentials: dict[str, float] = {}
-        if playstyle == "setup":
+        if playstyle == "setup_deep":
+            trap_potentials = self._lookahead_setup_deep(
+                board, candidate_ucis, sub_boards, predicted,
+            )
+        elif playstyle == "setup":
             tp_start = time.monotonic()
             tp_calls = 0
             for cand_uci in candidate_ucis[:5]:
@@ -691,6 +727,119 @@ class GameSession:
             sub_evals=sub_evals,
             trap_potentials=trap_potentials,
         )
+
+    # ----- setup_deep: 4-ply alternating SF/Maia lookahead ----- #
+
+    def _lookahead_setup_deep(
+        self,
+        board: chess.Board,
+        candidate_ucis: list[str],
+        sub_boards: dict[str, chess.Board],
+        predicted: dict[str, list[PredictedMove]],
+    ) -> dict[str, float]:
+        """Per-candidate 4-ply lookahead alternating SF (us) and Maia
+        (opp). Catches trap patterns SF dis-prefers at modest depth
+        (e.g. Fried Liver) because we trust Maia to walk into them on
+        opp's behalf rather than asking SF for their best reply.
+
+        For each top-5 candidate:
+
+          1. Take our move (already chosen).
+          2. Take Maia's top-1 opp reply.   ← sub2 (our turn)
+          3. Take SF's best move at depth 14.  ← sub3 (opp turn)
+          4. Take Maia's top-1 reply.       ← sub4 (our turn)
+          5. Evaluate sub4 with SF depth 12.
+
+        If material dropped along the chain and the final eval is
+        winning, signal a trap.
+        """
+        out: dict[str, float] = {}
+        bot_pov = board.turn  # the side we're analysing for
+        material_at_root = material_balance(board, bot_pov)
+        tp_start = time.monotonic()
+
+        for cand_uci in candidate_ucis[:5]:
+            if self._restart_event.is_set() or self._stop_event.is_set():
+                break
+            sub1 = sub_boards.get(cand_uci)
+            if sub1 is None:
+                continue
+            replies = predicted.get(cand_uci, [])
+            if not replies:
+                continue
+
+            weighted_quality = 0.0
+            used_prob = 0.0
+            for reply_pred in replies[:2]:
+                if self._restart_event.is_set() or self._stop_event.is_set():
+                    break
+                sub2 = sub1.copy()
+                try:
+                    sub2.push(reply_pred.move)
+                except Exception:
+                    continue
+                if sub2.is_game_over():
+                    continue
+
+                # 1) SF best for us at sub2
+                try:
+                    var = self._engine.multipv(sub2, k=1, depth=14)
+                    if not var or not var[0].pv:
+                        continue
+                    our_m = var[0].pv[0]
+                except Exception:
+                    continue
+                sub3 = sub2.copy()
+                try:
+                    sub3.push(our_m)
+                except Exception:
+                    continue
+                if sub3.is_game_over():
+                    # Mate or stalemate after our move; check if winning
+                    if sub3.is_checkmate() and sub3.turn != bot_pov:
+                        # We just delivered mate — huge trap signal
+                        weighted_quality += reply_pred.probability * 600.0
+                        used_prob += reply_pred.probability
+                    continue
+
+                # 2) Maia top-1 reply for opp
+                try:
+                    opp_preds = self._human.predict(sub3, top_k=1)
+                except Exception:
+                    opp_preds = []
+                if not opp_preds:
+                    continue
+                opp_m = opp_preds[0].move
+                sub4 = sub3.copy()
+                try:
+                    sub4.push(opp_m)
+                except Exception:
+                    continue
+
+                # 3) Eval the resulting position
+                try:
+                    eval4 = self._engine.evaluate_for(sub4, bot_pov, depth=12)
+                except Exception:
+                    continue
+
+                # 4) Check material drop along the chain
+                material_at_sub4 = material_balance(sub4, bot_pov)
+                drop = material_at_root - material_at_sub4
+                if drop > 100 and eval4 > 80:
+                    # The bot wants to play (cand → reply → our_m → opp_m)
+                    # which sacrifices material but ends up winning.
+                    quality = min(drop, 800) * (min(eval4, 1000) / 1000.0)
+                    weighted_quality += reply_pred.probability * quality
+                used_prob += reply_pred.probability
+
+            if used_prob > 0:
+                out[cand_uci] = weighted_quality / used_prob
+
+        log.debug(
+            "session %s setup_deep %d cands in %.2fs",
+            self.session_id, len(out), time.monotonic() - tp_start,
+        )
+        return out
 
     # ----- streaming assembly: build candidates from current multipv ----- #
 

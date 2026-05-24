@@ -253,6 +253,7 @@ def get_human_model(
     *,
     use_explorer: bool = True,
     explorer: LichessExplorer | None = None,
+    trap_model_path: str | None = None,
 ) -> HumanModel:
     """Return the best human-model implementation available.
 
@@ -260,8 +261,12 @@ def get_human_model(
 
       1. `LichessExplorerModel` for in-book positions (≥ 30 games at
          the target rating bucket on Lichess).
-      2. `MaiaLc0Model` once we leave book, if lc0 + weights present.
-      3. `SoftmaxStockfishModel` as the final fallback.
+      2. **`TrappyMaiaModel`** if ``trap_model_path`` is set and the
+         file exists — a PyTorch checkpoint from a converted Maia or
+         from a trap-fine-tuned model produced by
+         ``scripts/train_trap_policy.py``.
+      3. `MaiaLc0Model` once we leave book, if lc0 + weights present.
+      4. `SoftmaxStockfishModel` as the final fallback.
 
     Pass ``use_explorer=False`` to disable the API call (e.g. offline).
     """
@@ -270,13 +275,25 @@ def get_human_model(
     weights = os.path.join(weights_dir, f"maia-{nearest}.pb.gz")
 
     # Choose the neural / engine fallback first.
-    neural: HumanModel
-    if shutil.which("lc0") and os.path.isfile(weights):
+    neural: HumanModel | None = None
+
+    # 1) Trained PyTorch checkpoint (Maia-shaped or fine-tuned)
+    if trap_model_path and os.path.isfile(trap_model_path):
+        try:
+            from .trap_model import TrappyMaiaModel
+            neural = TrappyMaiaModel(trap_model_path)
+        except Exception:
+            neural = None
+
+    # 2) Lc0-served Maia
+    if neural is None and shutil.which("lc0") and os.path.isfile(weights):
         try:
             neural = MaiaLc0Model(weights)
         except Exception:
-            neural = SoftmaxStockfishModel(fallback_engine, elo=elo)
-    else:
+            neural = None
+
+    # 3) Softmax-Stockfish fallback
+    if neural is None:
         neural = SoftmaxStockfishModel(fallback_engine, elo=elo)
 
     if not use_explorer:

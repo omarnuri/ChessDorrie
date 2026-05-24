@@ -76,10 +76,17 @@ async def lifespan(app: FastAPI):
     GpuMonitor.instance()
     # SessionManager owns the live ponder sessions.
     loop = asyncio.get_running_loop()
+    trap_model_path = os.environ.get("TRAP_MODEL") or None
+    if trap_model_path and not os.path.isfile(trap_model_path):
+        logging.getLogger("app").warning(
+            "TRAP_MODEL=%s does not exist; ignoring", trap_model_path
+        )
+        trap_model_path = None
     app.state.session_manager = SessionManager(
         loop,
         weights_dir=WEIGHTS_DIR,
         use_explorer=os.environ.get("CD_USE_EXPLORER", "1") == "1",
+        trap_model_path=trap_model_path,
     )
     try:
         yield

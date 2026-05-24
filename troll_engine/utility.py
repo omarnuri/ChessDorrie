@@ -66,7 +66,7 @@ OPPONENT_STYLES = ("greedy", "balanced", "cautious")
 #              available 2 plies later. Slightly discounts the immediate-sac
 #              bonus in favour of moves whose top-1 future continuation has
 #              a high-quality sacrificial candidate.
-PLAYSTYLES = ("direct", "setup")
+PLAYSTYLES = ("direct", "setup", "setup_deep")
 
 
 @dataclass
@@ -162,7 +162,7 @@ def troll_utility(
             sacrifice_bonus *= 0.5   # they probably won't take
         # Playstyle modulation: setup-mode prefers DELAYED sacs over
         # immediate ones, so discount the current-move sac bonus.
-        if playstyle == "setup":
+        if playstyle in ("setup", "setup_deep"):
             sacrifice_bonus *= 0.7
     score += sacrifice_bonus
 
@@ -171,12 +171,18 @@ def troll_utility(
     # available within 2 plies. Always present as a signal; only
     # contributes meaningfully in setup playstyle.
     if f.trap_potential_cp > 0:
-        weight = 0.8 if playstyle == "setup" else 0.15
+        if playstyle == "setup_deep":
+            weight = 1.0
+        elif playstyle == "setup":
+            weight = 0.8
+        else:
+            weight = 0.15
         tp_bonus = min(400.0, f.trap_potential_cp * weight)
         score += tp_bonus
-        if playstyle == "setup" and tp_bonus > 50:
+        if playstyle in ("setup", "setup_deep") and tp_bonus > 50:
+            horizon = "4 plies" if playstyle == "setup_deep" else "2 plies"
             notes.append(
-                f"🪤 sets up a sacrifice 2 plies ahead (+{tp_bonus:.0f}cp)"
+                f"🪤 sets up a sacrifice {horizon} ahead (+{tp_bonus:.0f}cp)"
             )
 
     # --- 4. Human-factor amplification ---------------------------------

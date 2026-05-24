@@ -144,13 +144,18 @@ async def _dispatch(session, ws: WebSocket, msg: dict) -> None:
 
         elif t == "playstyle":
             ps = msg.get("playstyle", "direct")
-            if ps in ("direct", "setup"):
+            if ps in ("direct", "setup", "setup_deep"):
                 session.set_playstyle(ps)
                 await _broadcast_position(session)
 
         elif t == "autoplay":
             on = bool(msg.get("on", False))
             session.set_autoplay(on)
+            await _broadcast_position(session)
+
+        elif t == "autostyle":
+            on = bool(msg.get("on", False))
+            session.set_autostyle(on)
             await _broadcast_position(session)
 
         elif t == "reset":

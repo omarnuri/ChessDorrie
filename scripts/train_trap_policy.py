@@ -111,19 +111,57 @@ def _make_model(num_residual_blocks: int = 6, channels: int = 64):
 def _load_pretrained_maia(model, weights_path: str) -> None:
     """Initialise from a Maia checkpoint.
 
-    This is a stub. In practice you'd use the converter at
-    `scripts/convert_maia_to_torch.py` (not yet written) which reads
-    the Lc0 protobuf weights and copies them into our PyTorch model
-    layer-by-layer. The matching is non-trivial because Lc0's move
-    encoding differs slightly from python-chess's.
+    Two accepted file types:
+
+      * ``.pt`` — already a PyTorch checkpoint produced by
+        ``scripts/convert_maia_to_torch.py`` or by a previous
+        training run. Loaded directly into the model.
+      * ``.pb.gz`` — raw Lc0 / Maia protobuf weights. The script
+        invokes the converter at runtime and then loads the result.
+
+    Missing keys are tolerated (strict=False) — the converter is
+    a documented skeleton and may produce a partial state dict; the
+    unmapped layers stay at random initialisation.
     """
-    if not weights_path or not os.path.isfile(weights_path):
+    if not weights_path:
         LOG.warning("no pretrained weights — training from scratch (slow)")
         return
-    LOG.warning(
-        "pretrained-weights path supplied (%s) but converter not "
-        "implemented in this skeleton; training from scratch",
-        weights_path,
+    if not os.path.isfile(weights_path):
+        LOG.warning("init-from path does not exist: %s", weights_path)
+        return
+
+    import torch
+
+    if weights_path.endswith(".pt"):
+        ckpt_path = weights_path
+    elif weights_path.endswith((".pb.gz", ".pb")):
+        from pathlib import Path as _P
+        ckpt_path = str(_P(weights_path).with_suffix(".converted.pt"))
+        if not os.path.isfile(ckpt_path):
+            LOG.info("converting %s → %s", weights_path, ckpt_path)
+            import subprocess
+            res = subprocess.run(
+                [sys.executable, "scripts/convert_maia_to_torch.py",
+                 weights_path, "--out", ckpt_path],
+                capture_output=True, text=True,
+            )
+            if res.returncode != 0:
+                LOG.error("conversion failed; training from scratch:\n%s",
+                          res.stderr)
+                return
+    else:
+        LOG.warning("unrecognised weights extension: %s", weights_path)
+        return
+
+    ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=True)
+    state = ckpt.get("state_dict", ckpt)
+    missing, unexpected = model.load_state_dict(state, strict=False)
+    if not state:
+        LOG.warning("checkpoint contains no weights — training from scratch")
+        return
+    LOG.info(
+        "warm-started from %s (%d keys loaded, %d missing, %d unexpected)",
+        ckpt_path, len(state), len(missing), len(unexpected),
     )
 
 

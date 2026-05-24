@@ -38,10 +38,12 @@ class SessionManager:
         *,
         weights_dir: str = "weights",
         use_explorer: bool = True,
+        trap_model_path: str | None = None,
     ) -> None:
         self._loop = loop
         self._weights_dir = weights_dir
         self._use_explorer = use_explorer
+        self._trap_model_path = trap_model_path
         self._lock = threading.Lock()
         self._sessions: dict[str, GameSession] = {}
         self._explorer = (
@@ -79,6 +81,7 @@ class SessionManager:
                 explorer=self._explorer,
                 trap_db=self._trap_db,
                 use_explorer=self._use_explorer,
+                trap_model_path=self._trap_model_path,
             )
             if starting_fen:
                 session.reset_to(starting_fen)

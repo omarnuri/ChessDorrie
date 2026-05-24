@@ -47,13 +47,17 @@
         </select>
       </label>
       <label>Playstyle
-        <select id="playstyle-select" title="direct = take the sac now · setup = build positions where sacs will be available 2 plies later">
+        <select id="playstyle-select" title="direct = take the sac now · setup = 2-ply trap-setting · setup_deep = 4-ply alternating SF/Maia lookahead (slow but catches Fried-Liver-class patterns)">
           <option value="direct" selected>🗡 direct (sac now)</option>
-          <option value="setup">🪤 setup (build to sacs)</option>
+          <option value="setup">🪤 setup (2-ply, fast)</option>
+          <option value="setup_deep">🪤🔬 setup deep (4-ply, slow)</option>
         </select>
       </label>
       <label class="autoplay-label" title="When ON, the bot auto-plays its troll-best move when it's your selected side's turn">
         <input type="checkbox" id="autoplay-toggle" /> Auto-play
+      </label>
+      <label class="autoplay-label" title="When ON, observes opp moves and auto-sets the matching Style (greedy/cautious/balanced)">
+        <input type="checkbox" id="autostyle-toggle" /> Auto-detect style
       </label>
       <div class="side-selector" title="Which side you are playing">
         I play:
@@ -93,6 +97,11 @@
           </span>
           <span class="engine-stat"><span class="engine-label">VRAM</span> <span id="engine-vram">—</span></span>
           <span class="engine-stat"><span class="engine-label">Elapsed</span> <span id="engine-elapsed">—</span></span>
+        </div>
+        <div class="engine-row opp-detected-row" id="opp-detected-row" style="display:none">
+          <span class="engine-label">Opp</span>
+          <span id="opp-detected" class="engine-value">—</span>
+          <button id="opp-apply-btn" class="apply-btn" title="Apply detected style">apply</button>
         </div>
       </div>
 
