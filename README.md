@@ -117,6 +117,36 @@ colab_launcher.ipynb # One-click Colab: clones, installs, launches, tunnels
 setup.sh             # Local install (Stockfish, Lc0, Maia weights)
 ```
 
+## Two engine paths: CPU (Stockfish) vs GPU (Lc0+BT3)
+
+ChessDorrie can use *either* Stockfish (alpha-beta search on CPU) or
+Lc0 (MCTS + neural network on GPU) as its main search engine.
+They're both first-class — pick whichever your hardware likes better:
+
+| | Stockfish (default on CPU machines) | Lc0+BT3 (default if GPU + net present) |
+|---|---|---|
+| Where it runs | CPU only | GPU only (idle CPU) |
+| Strength | ~3500 Elo at depth 30+ | ~3700 Elo at 500k+ visits |
+| Speed | ~3-5M NPS on 8 cores | ~150k NPS on G4, 500k+ on H100 |
+| Search limit metric | `depth` (plies) | `nodes` (MCTS visits) |
+| Best for | tactical analysis, forced lines | strategic positions, free CPU |
+| Setup | apt install stockfish | scripts/install_lc0_cuda.sh + BT3 net |
+
+The engine is auto-selected based on what's installed; force a
+choice via the `CHESS_ENGINE` env var: `auto` (default), `stockfish`,
+or `lc0`. On a Colab GPU box, `auto` picks Lc0+BT3 if the network is
+downloaded, and the CPU stays free for a second helper engine and
+the opponent tracker.
+
+Download a strong net (~280 MB):
+```bash
+bash scripts/download_lc0_net.sh BT3   # or BT4 (600 MB), T82 (50 MB)
+CHESS_ENGINE=lc0 bash run.sh
+```
+
+The UI shows a "Stockfish (CPU)" or "Lc0 (GPU)" badge so you always
+know which one's driving the analysis.
+
 ## Running locally (with your own GPU)
 
 Two commands. The first installs everything; the second launches the

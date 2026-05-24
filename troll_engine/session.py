@@ -48,6 +48,7 @@ import chess
 
 from .engine import Engine, material_balance, PIECE_CP, MATE_SCORE, _pov_score_to_cp
 from .human_model import HumanModel, get_human_model, PredictedMove
+from .lc0_engine import get_engine
 from .lichess_explorer import LichessExplorer
 from .opponent_tracker import OpponentTracker
 from .search import TrollSearch
@@ -168,6 +169,7 @@ class GameSession:
         explorer: LichessExplorer | None = None,
         trap_db: TrapDB | None = None,
         engine_threads: int = 2,
+        engine_type: str = "auto",
         use_explorer: bool = True,
         trap_model_path: str | None = None,
     ) -> None:
@@ -182,7 +184,13 @@ class GameSession:
         self.autoplay = bool(autoplay)
         self.weights_dir = weights_dir
 
-        self._engine = Engine(threads=engine_threads)
+        self._engine = get_engine(
+            engine_type=engine_type, threads=engine_threads,
+        )
+        self.engine_type = (
+            "lc0" if self._engine.__class__.__name__ == "Lc0Engine" else "stockfish"
+        )
+        self.engine_limit_kind = self._engine.limit_kind  # "depth" or "nodes"
         self._explorer = explorer or (
             LichessExplorer(
                 ratings=(max(1000, elo - 200), elo, min(2500, elo + 200)),
@@ -283,6 +291,8 @@ class GameSession:
             "autoplay": self.autoplay,
             "autostyle": self._autostyle,
             "opp_detected": self._opp_tracker.snapshot().to_dict(),
+            "engine_type": self.engine_type,
+            "engine_limit_kind": self.engine_limit_kind,
         }
 
     def submit_move(self, uci: str) -> bool:

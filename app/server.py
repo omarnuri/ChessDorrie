@@ -87,6 +87,7 @@ async def lifespan(app: FastAPI):
         weights_dir=WEIGHTS_DIR,
         use_explorer=os.environ.get("CD_USE_EXPLORER", "1") == "1",
         trap_model_path=trap_model_path,
+        engine_type=os.environ.get("CHESS_ENGINE", "auto"),
     )
     try:
         yield

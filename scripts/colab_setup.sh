@@ -29,14 +29,18 @@ REPO_ROOT="$(pwd)"
 WITH_DATA=""
 SKIP_LC0=0
 SKIP_WEIGHTS=0
+WITH_STRONG_NET="${WITH_STRONG_NET:-BT3}"  # name or "" to skip
 while [ $# -gt 0 ]; do
     case "$1" in
         --with-data) WITH_DATA="$2"; shift 2;;
         --with-data=*) WITH_DATA="${1#*=}"; shift;;
         --skip-lc0) SKIP_LC0=1; shift;;
         --skip-weights) SKIP_WEIGHTS=1; shift;;
+        --strong-net) WITH_STRONG_NET="$2"; shift 2;;
+        --strong-net=*) WITH_STRONG_NET="${1#*=}"; shift;;
+        --no-strong-net) WITH_STRONG_NET=""; shift;;
         -h|--help)
-            sed -n '2,18p' "$0"; exit 0;;
+            sed -n '2,24p' "$0"; exit 0;;
         *) echo "unknown flag: $1" >&2; exit 1;;
     esac
 done
@@ -132,6 +136,20 @@ else
             rm -f "$f"
         fi
     done
+fi
+
+# ------------- 4b. Strong Lc0 net (for GPU-based main engine) -------------
+say "4b/6 strong Lc0 net (for CHESS_ENGINE=lc0)..."
+if [ -z "$WITH_STRONG_NET" ]; then
+    ok "skipped (pass --strong-net BT3 to download)"
+elif [ "$SKIP_LC0" = 1 ] && ! command -v lc0 >/dev/null 2>&1; then
+    warn "lc0 isn't installed; strong net would be unused. Skipping download."
+else
+    if bash scripts/download_lc0_net.sh "$WITH_STRONG_NET" 2>&1 | tail -3; then
+        ok "strong net ready: weights/lc0/${WITH_STRONG_NET}.pb.gz"
+    else
+        warn "strong net download failed; main engine will be Stockfish"
+    fi
 fi
 
 # ------------- 5. Training dataset (optional) -------------

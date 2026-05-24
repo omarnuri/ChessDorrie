@@ -284,6 +284,25 @@ main {
 }
 .apply-btn:hover { background: #e67050; }
 
+.engine-badge {
+  margin-left: auto;
+  font-size: 10px;
+  padding: 2px 8px;
+  border-radius: 3px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  text-transform: none;
+  float: right;
+}
+.engine-badge.gpu {
+  background: #2d5e3e;
+  color: #a5e6c0;
+}
+.engine-badge.cpu {
+  background: #3a2e28;
+  color: var(--text-dim);
+}
+
 .meters {
   display: grid;
   gap: 10px;

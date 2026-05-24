@@ -79,6 +79,11 @@ class Engine:
     """Long-lived Stockfish process. Use as a context manager or call
     `close()` explicitly."""
 
+    # `Lc0Engine` exposes the same API but uses MCTS visits instead of
+    # alpha-beta depth as its search limit. Code that wants to query
+    # which kind of limit applies checks `engine.limit_kind`.
+    limit_kind = "depth"
+
     def __init__(self, threads: int = 2, hash_mb: int = 256) -> None:
         path = _stockfish_path()
         self._engine = chess.engine.SimpleEngine.popen_uci(path)

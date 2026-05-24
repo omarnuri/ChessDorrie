@@ -159,6 +159,7 @@ function applyPosition(p) {
     setStatus(p.is_checkmate ? "Checkmate." : (p.is_stalemate ? "Stalemate." : "Game over."));
   }
   renderOppDetected(p.opp_detected, p.style);
+  applyEngineBadge(p.engine_type, p.engine_limit_kind);
   // Sync server-applied autostyle change
   if (p.style && p.style !== state.style) {
     state.style = p.style;
@@ -228,6 +229,18 @@ function applySnapshot(msg) {
     `${r.side_to_move} to move · SF: ${objSan} · Troll: ${trollSan}` +
     (msg.cache_hit ? " (cache hit)" : "")
   );
+}
+
+function applyEngineBadge(engineType, limitKind) {
+  const el = document.getElementById("engine-type-badge");
+  if (!el) return;
+  if (engineType === "lc0") {
+    el.textContent = "Lc0 (GPU)";
+    el.className = "engine-badge gpu";
+  } else {
+    el.textContent = "Stockfish (CPU)";
+    el.className = "engine-badge cpu";
+  }
 }
 
 function applyMetrics(m) {
