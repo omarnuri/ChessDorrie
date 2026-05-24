@@ -65,7 +65,7 @@ CACHE_LIMIT = 256
 
 # Streaming-analysis caps. Set high; the worker preempts on board change
 # so the engine rarely actually reaches these.
-DEFAULT_STREAM_MAX_DEPTH = 30
+DEFAULT_STREAM_MAX_DEPTH = int(os.environ.get("CD_STREAM_MAX_DEPTH", "32"))
 DEFAULT_MULTIPV = 8
 
 # Broadcast cadence (seconds).
@@ -102,13 +102,23 @@ class PreparedPosition:
 
 # Analysis-precision modes.
 #
+# These are CPU defaults — pleasant on a 4-core sandbox. On a beefier
+# machine (Colab A100/H100 with Lc0+CUDA serving Maia) the engine can
+# afford much deeper sub-evals. Override via env vars:
+#
+#   CD_PREP_SHALLOW_DEPTH=16     (default 12)
+#   CD_HYBRID_DEPTH=12           (default 10)
+#   CD_DEEP_DEPTH=18             (default 14)
+#   CD_SETUP_DEEP_DEPTH=18       (default 16)
+#   CD_STREAM_MAX_DEPTH=40       (default 32)
+#
 #   "lite"   — no per-reply sub-evals (expected_eval = objective_eval).
 #              Fastest; pure trap-DB + Explorer + sacrifice-detection signal.
-#   "hybrid" — sub-evals for the top 5 candidates × top 3 replies at depth 8.
-#              ~1-2 s prep cost; brings back the human_factor and anger
-#              signals for the moves that matter most.
-#   "deep"   — sub-evals for the top 8 candidates × top 5 replies at depth 12.
-#              ~5-10 s prep cost; high-fidelity troll utility everywhere.
+#   "hybrid" — sub-evals for the top 5 candidates × top 3 replies.
+#              ~1-2 s prep cost on CPU; brings back the human_factor and
+#              anger signals for the moves that matter most.
+#   "deep"   — sub-evals for the top 8 candidates × top 5 replies, deeper.
+#              ~5-10 s prep cost on CPU; high-fidelity troll utility.
 ANALYSIS_MODES = ("lite", "hybrid", "deep")
 
 
@@ -119,10 +129,15 @@ class _ModeConfig:
     depth: int          # sub-eval depth
 
 
+_HYBRID_DEPTH = int(os.environ.get("CD_HYBRID_DEPTH", "10"))
+_DEEP_DEPTH = int(os.environ.get("CD_DEEP_DEPTH", "14"))
+_PREP_SHALLOW_DEPTH = int(os.environ.get("CD_PREP_SHALLOW_DEPTH", "12"))
+_SETUP_DEEP_DEPTH = int(os.environ.get("CD_SETUP_DEEP_DEPTH", "16"))
+
 _MODE_CONFIGS: dict[str, _ModeConfig] = {
     "lite":   _ModeConfig(0, 0, 0),
-    "hybrid": _ModeConfig(5, 3, 8),
-    "deep":   _ModeConfig(8, 5, 12),
+    "hybrid": _ModeConfig(5, 3, _HYBRID_DEPTH),
+    "deep":   _ModeConfig(8, 5, _DEEP_DEPTH),
 }
 
 
@@ -184,8 +199,10 @@ class GameSession:
         # During streaming we bypass `analyse` and call lower-level helpers.
         self._search = TrollSearch(
             self._engine, self._human,
-            candidate_count=DEFAULT_MULTIPV, candidate_depth=12,
-            reply_count=5, subposition_depth=10,
+            candidate_count=DEFAULT_MULTIPV,
+            candidate_depth=_PREP_SHALLOW_DEPTH,
+            reply_count=5,
+            subposition_depth=_HYBRID_DEPTH,
             elo=elo, explorer=self._explorer, trap_db=self._trap_db,
         )
         self._opp_tracker = OpponentTracker(self._engine)
@@ -558,7 +575,7 @@ class GameSession:
         candidate_ucis: list[str] = []
         sub_boards: dict[str, chess.Board] = {}
         try:
-            shallow = self._engine.multipv(board, k=DEFAULT_MULTIPV, depth=10)
+            shallow = self._engine.multipv(board, k=DEFAULT_MULTIPV, depth=_PREP_SHALLOW_DEPTH)
             for var in shallow:
                 if not var.pv:
                     continue
@@ -674,7 +691,7 @@ class GameSession:
                     if sub2.is_game_over():
                         continue
                     try:
-                        future_vars = self._engine.multipv(sub2, k=3, depth=12)
+                        future_vars = self._engine.multipv(sub2, k=3, depth=max(12, _DEEP_DEPTH - 2))
                     except Exception:
                         continue
                     tp_calls += 1
@@ -783,7 +800,7 @@ class GameSession:
 
                 # 1) SF best for us at sub2
                 try:
-                    var = self._engine.multipv(sub2, k=1, depth=14)
+                    var = self._engine.multipv(sub2, k=1, depth=_SETUP_DEEP_DEPTH)
                     if not var or not var[0].pv:
                         continue
                     our_m = var[0].pv[0]
@@ -818,7 +835,7 @@ class GameSession:
 
                 # 3) Eval the resulting position
                 try:
-                    eval4 = self._engine.evaluate_for(sub4, bot_pov, depth=12)
+                    eval4 = self._engine.evaluate_for(sub4, bot_pov, depth=max(12, _SETUP_DEEP_DEPTH - 2))
                 except Exception:
                     continue
 

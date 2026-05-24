@@ -10,7 +10,13 @@ if [ -d ".venv" ]; then
     source .venv/bin/activate
 fi
 
-# Engine tuning — bump these on a beefy GPU machine.
+# Engine tuning — defaults are CPU-friendly. On Colab GPU + Lc0 bump:
+#   CD_STREAM_MAX_DEPTH=40         (default 32; main multipv goes that deep)
+#   CD_PREP_SHALLOW_DEPTH=16       (default 12; how deep to pick candidates)
+#   CD_HYBRID_DEPTH=14             (default 10; sub-evals in hybrid mode)
+#   CD_DEEP_DEPTH=18               (default 14; sub-evals in deep mode)
+#   CD_SETUP_DEEP_DEPTH=20         (default 16; setup_deep alternating lookahead)
+# Legacy POST endpoint tuning:
 export CD_THREADS="${CD_THREADS:-8}"
 export CD_DEPTH="${CD_DEPTH:-18}"
 export CD_SUB_DEPTH="${CD_SUB_DEPTH:-14}"
